@@ -1,0 +1,12 @@
+{:paths ["src"]
+
+ ;; macOS only: SDL3 from Homebrew, text via the system CoreText stack.
+ :jolt/native [{:name "SDL3"
+                :darwin ["libSDL3.0.dylib" "libSDL3.dylib"
+                         "/opt/homebrew/lib/libSDL3.dylib"]}
+               {:name "CoreFoundation"
+                :darwin ["/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"]}
+               {:name "CoreGraphics"
+                :darwin ["/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"]}
+               {:name "CoreText"
+                :darwin ["/System/Library/Frameworks/CoreText.framework/CoreText"]}]}
