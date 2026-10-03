@@ -150,6 +150,21 @@
             u)]
     (+ start (u16->cp p u))))
 
+(defn range-segments
+  "The visual extent of positions [a, b): a [k x0 x1] for each visual line
+  the range covers, with x0 < x1 in pixels."
+  [L a b]
+  (for [{:keys [p start end first-line]} (:paras L)
+        :when (and (< a end) (> b start))
+        :let [ua (cp->u16 p (- (max a start) start))
+              ub (cp->u16 p (- (min b end) start))]
+        [j {:keys [line] ls :start le :end}] (map-indexed vector (:lines p))
+        :when (and (< ua le) (> ub ls))
+        :let [x0 (ct/offset-for-index line (max ua ls))
+              x1 (ct/offset-for-index line (min ub le))]
+        :when (< x0 x1)]
+    [(+ first-line j) x0 x1]))
+
 (defn line-start [L k] (position-at L k -1.0e9))
 (defn line-end   [L k] (position-at L k 1.0e9))
 

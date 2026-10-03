@@ -1,8 +1,9 @@
 (ns hoatzin.coretext
   "Text shaping, wrapping and rasterization through CoreText (macOS only).
 
-  Lines are drawn into a CoreGraphics bitmap as white, premultiplied RGBA;
-  tint them on the GPU (e.g. SDL_SetTextureColorMod).
+  Lines are drawn into a CoreGraphics bitmap as premultiplied RGBA, in their
+  final colour: tinting white text on the GPU would also tint colour glyphs
+  such as emoji.
 
   CoreText indexes strings in UTF-16 code units, and every index in this
   namespace is one. Converting to and from Jolt's code-point indices is the
@@ -207,12 +208,13 @@
         (when-not (neg? i) i)))))
 
 (defn rasterize-line
-  "Draw `line` into a new RGBA bitmap, white on transparent.
+  "Draw `line` into a new RGBA bitmap in colour [r g b] (0-255), on
+  transparent.
 
   Returns {:pixels ptr :width w :height h :pitch bytes :pad px :baseline px}:
   :baseline is the baseline's distance from the bitmap's top and :pad the
   blank margin left of the line's origin. Free :pixels with ffi/free."
-  [line]
+  [line [r g b]]
   (ffi/with-out [pa :double]
     (ffi/with-out [pd :double]
       (let [advance (ct-line-typographic-bounds line pa pd ffi/null)
@@ -234,7 +236,7 @@
         (try
           ;; LCD-style smoothing assumes an opaque backdrop; we have none.
           (cg-context-set-should-smooth-fonts ctx false)
-          (cg-context-set-fill ctx 1.0 1.0 1.0 1.0)
+          (cg-context-set-fill ctx (/ r 255.0) (/ g 255.0) (/ b 255.0) 1.0)
           ;; CG's origin is bottom-left. A whole-pixel baseline keeps glyphs crisp.
           (cg-context-set-text-position ctx (double pad) (double (+ pad descent)))
           (ct-line-draw line ctx)

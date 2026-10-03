@@ -15,6 +15,7 @@
 (def EVENT-WINDOW-FOCUS-LOST     0x20f)
 (def EVENT-WINDOW-DISPLAY-SCALE-CHANGED 0x214)
 (def EVENT-KEY-DOWN              0x300)
+(def EVENT-TEXT-EDITING          0x302)
 (def EVENT-TEXT-INPUT            0x303)
 (def EVENT-MOUSE-BUTTON-DOWN     0x401)
 (def EVENT-MOUSE-WHEEL           0x403)
@@ -46,6 +47,8 @@
 (def O-key-key 28)        ; SDL_KeyboardEvent.key (SDL_Keycode)
 (def O-key-mod 32)        ; SDL_KeyboardEvent.mod (SDL_Keymod, Uint16)
 (def O-text-text 24)      ; SDL_TextInputEvent.text (const char *)
+(def O-edit-text 24)      ; SDL_TextEditingEvent.text (const char *)
+(def O-edit-start 32)     ; SDL_TextEditingEvent.start (Sint32, -1 if unset)
 (def O-button-button 24)  ; SDL_MouseButtonEvent.button (Uint8)
 (def O-button-x 28)       ; SDL_MouseButtonEvent.x (float)
 (def O-button-y 32)
@@ -54,12 +57,14 @@
 
 (def PIXELFORMAT-RGBA32 0x16762004)  ; ABGR8888: R,G,B,A bytes on little-endian
 (def TEXTUREACCESS-STATIC 0)
+(def TEXTUREACCESS-TARGET 2)
 (def BLENDMODE-BLEND-PREMULTIPLIED 0x10)
 
 (def frect (ffi/layout [:struct [[:x :float] [:y :float] [:w :float] [:h :float]]]))
 (def rect  (ffi/layout [:struct [[:x :int] [:y :int] [:w :int] [:h :int]]]))
 
 (ffi/defcfn init        "SDL_Init"        [:uint] :bool)
+(ffi/defcfn set-hint    "SDL_SetHint"     [:string :string] :bool)
 (ffi/defcfn quit        "SDL_Quit"        [] :void)
 (ffi/defcfn get-error   "SDL_GetError"    [] :string)
 (ffi/defcfn get-ticks   "SDL_GetTicks"    [] :uint64)
@@ -96,9 +101,25 @@
 (ffi/defcfn destroy-texture "SDL_DestroyTexture" [:pointer] :void)
 (ffi/defcfn update-texture  "SDL_UpdateTexture"  [:pointer :pointer :pointer :int] :bool)
 (ffi/defcfn set-texture-blend-mode "SDL_SetTextureBlendMode" [:pointer :uint] :bool)
-(ffi/defcfn set-texture-color-mod  "SDL_SetTextureColorMod"
-  [:pointer :uint8 :uint8 :uint8] :bool)
 (ffi/defcfn render-texture "SDL_RenderTexture" [:pointer :pointer :pointer :pointer] :bool)
+
+;; Offscreen rendering and image files (used by the tests).
+(ffi/defcfn create-software-renderer "SDL_CreateSoftwareRenderer" [:pointer] :pointer)
+(ffi/defcfn set-render-target  "SDL_SetRenderTarget"  [:pointer :pointer] :bool)
+(ffi/defcfn render-read-pixels "SDL_RenderReadPixels" [:pointer :pointer] :pointer)
+(ffi/defcfn create-surface     "SDL_CreateSurface"    [:int :int :uint] :pointer)
+(ffi/defcfn create-surface-from "SDL_CreateSurfaceFrom"
+  [:int :int :uint :pointer :int] :pointer)
+(ffi/defcfn convert-surface    "SDL_ConvertSurface"   [:pointer :uint] :pointer)
+(ffi/defcfn destroy-surface    "SDL_DestroySurface"   [:pointer] :void)
+(ffi/defcfn save-png           "SDL_SavePNG"          [:pointer :string] :bool)
+(ffi/defcfn load-png           "SDL_LoadPNG"          [:string] :pointer)
+
+;; SDL_Surface fields, from offsetof against SDL 3.4.
+(def O-surface-w 8)
+(def O-surface-h 12)
+(def O-surface-pitch 16)
+(def O-surface-pixels 24)
 
 (defn check!
   "Throw with SDL_GetError when an SDL call failed (false or NULL)."

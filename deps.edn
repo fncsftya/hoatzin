@@ -9,4 +9,14 @@
                {:name "CoreGraphics"
                 :darwin ["/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"]}
                {:name "CoreText"
-                :darwin ["/System/Library/Frameworks/CoreText.framework/CoreText"]}]}
+                :darwin ["/System/Library/Frameworks/CoreText.framework/CoreText"]}]
+
+ ;; jolt -M:test                     everything
+ ;; jolt -M:test -e :integration     unit tests only
+ ;; jolt -M:test -i :integration     golden-image tests only
+ ;; UPDATE_GOLDEN=1 jolt -M:test -i :integration   regenerate goldens
+ :aliases
+ {:test {:extra-paths ["test"]
+         :extra-deps  {io.github.cognitect-labs/test-runner
+                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+         :main-opts   ["-m" "cognitect.test-runner"]}}}

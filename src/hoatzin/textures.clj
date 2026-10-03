@@ -4,7 +4,7 @@
   A line's pixels depend only on its text and the font, not on where it sits
   or how its paragraph wrapped. So keying by text means typing re-rasterizes
   only the lines whose content changed, and a resize that merely moves lines
-  rasterizes nothing. Clear the cache when the font changes."
+  rasterizes nothing. Clear the cache when the font or colour changes."
   (:require [jolt.ffi :as ffi]
             [hoatzin.coretext :as ct]
             [hoatzin.sdl :as sdl]))
@@ -15,8 +15,8 @@
 
 (defn cache [] (atom {:frame 0 :entries {}}))
 
-(defn- upload [renderer line [r g b]]
-  (let [{:keys [pixels width height pitch pad baseline]} (ct/rasterize-line line)]
+(defn- upload [renderer line color]
+  (let [{:keys [pixels width height pitch pad baseline]} (ct/rasterize-line line color)]
     (try
       (let [tex (sdl/check! (sdl/create-texture renderer sdl/PIXELFORMAT-RGBA32
                                                 sdl/TEXTUREACCESS-STATIC width height)
@@ -24,7 +24,6 @@
         (sdl/check! (sdl/update-texture tex ffi/null pixels pitch) "SDL_UpdateTexture")
         (sdl/check! (sdl/set-texture-blend-mode tex sdl/BLENDMODE-BLEND-PREMULTIPLIED)
                     "SDL_SetTextureBlendMode")
-        (sdl/set-texture-color-mod tex r g b)
         {:texture tex :width width :height height :pad pad :baseline baseline})
       (finally (ffi/free pixels)))))
 

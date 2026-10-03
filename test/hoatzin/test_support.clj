@@ -1,0 +1,233 @@
+(ns hoatzin.test-support
+  "Headless test harness.
+
+  An editor session renders with SDL's software renderer into an offscreen
+  target texture: no window, no OS event loop, no clock. Input is synthetic
+  data events and time only moves when a test advances it, so every run
+  produces the same pixels.
+
+  Golden images live in test/golden/<name>.png. A mismatch writes
+  target/golden/<name>-actual.png and <name>-diff.png (differing pixels in
+  red over a dimmed copy of the golden). Regenerate goldens with
+  UPDATE_GOLDEN=1 after checking the change is intended."
+  (:require [babashka.fs :as fs]
+            [clojure.test :refer [is]]
+            [jolt.ffi :as ffi]
+            [hoatzin.app :as app]
+            [hoatzin.sdl :as sdl]))
+
+;; ---------------------------------------------------------------- canvas
+
+(defn- resize-canvas [{:keys [renderer target] :as canvas} w h]
+  (let [t (sdl/check! (sdl/create-texture renderer sdl/PIXELFORMAT-RGBA32
+                                          sdl/TEXTUREACCESS-TARGET w h)
+                      "SDL_CreateTexture")]
+    (sdl/check! (sdl/set-render-target renderer t) "SDL_SetRenderTarget")
+    (some-> target sdl/destroy-texture)
+    (assoc canvas :target t)))
+
+(defn- canvas
+  "A software renderer drawing into a `w` x `h` pixel target texture."
+  [w h]
+  (let [surface  (sdl/check! (sdl/create-surface 1 1 sdl/PIXELFORMAT-RGBA32) "SDL_CreateSurface")
+        renderer (sdl/check! (sdl/create-software-renderer surface) "SDL_CreateSoftwareRenderer")]
+    (resize-canvas {:surface surface :renderer renderer} w h)))
+
+(defn- destroy-canvas! [{:keys [surface renderer target]}]
+  (sdl/set-render-target renderer ffi/null)
+  (sdl/destroy-texture target)
+  (sdl/destroy-renderer renderer)
+  (sdl/destroy-surface surface))
+
+;; ---------------------------------------------------------------- images
+
+(defn- surface->image
+  "Copy any SDL surface into {:width :height :pixels} (tightly packed RGBA)."
+  [surface]
+  (let [rgba (sdl/check! (sdl/convert-surface surface sdl/PIXELFORMAT-RGBA32) "SDL_ConvertSurface")]
+    (try
+      (let [w     (ffi/read rgba :int sdl/O-surface-w)
+            h     (ffi/read rgba :int sdl/O-surface-h)
+            pitch (ffi/read rgba :int sdl/O-surface-pitch)
+            px    (ffi/read rgba :pointer sdl/O-surface-pixels)
+            row   (* 4 w)]
+        {:width w :height h
+         :pixels (if (= pitch row)
+                   (ffi/read-array px (* row h))
+                   (ffi/with-alloc [packed (* row h)]
+                     (doseq [y (range h)]
+                       (ffi/copy (+ px (* y pitch)) (+ packed (* y row)) row))
+                     (ffi/read-array packed (* row h))))})
+      (finally (sdl/destroy-surface rgba)))))
+
+(defn read-png [path]
+  (let [s (sdl/check! (sdl/load-png (str path)) (str "SDL_LoadPNG " path))]
+    (try (surface->image s) (finally (sdl/destroy-surface s)))))
+
+(defn write-png! [{:keys [width height pixels]} path]
+  (fs/create-dirs (fs/parent path))
+  (ffi/with-alloc [buf (alength pixels)]
+    (ffi/write-array buf pixels)
+    (let [s (sdl/check! (sdl/create-surface-from width height sdl/PIXELFORMAT-RGBA32 buf (* 4 width))
+                        "SDL_CreateSurfaceFrom")]
+      (try (sdl/check! (sdl/save-png s (str path)) (str "SDL_SavePNG " path))
+           (finally (sdl/destroy-surface s))))))
+
+(defn diff-images
+  "Compare RGBA images. A pixel differs when any channel differs by more
+  than `tolerance`. Returns {:differing n :max-delta d :diff image}, or
+  {:size-mismatch [[w h] [w h]]}."
+  [expected actual tolerance]
+  (let [{w :width h :height a :pixels} expected
+        {b :pixels} actual]
+    (if (not= [w h] [(:width actual) (:height actual)])
+      {:size-mismatch [[w h] [(:width actual) (:height actual)]]}
+      (let [n   (* w h)
+            out (byte-array (* 4 n))]
+        (loop [p 0, differing 0, max-delta 0]
+          (if (= p n)
+            {:differing differing :max-delta max-delta
+             :diff {:width w :height h :pixels out}}
+            (let [i (* 4 p)
+                  d (loop [c 0, m 0]
+                      (if (= c 4)
+                        m
+                        (recur (inc c)
+                               (max m (Math/abs (- (bit-and (aget a (+ i c)) 0xff)
+                                                   (bit-and (aget b (+ i c)) 0xff)))))))
+                  bad? (> d tolerance)]
+              ;; red where different; elsewhere the expected pixel, dimmed
+              (dotimes [c 3]
+                (aset out (+ i c)
+                      (unchecked-byte (if bad?
+                                        (if (zero? c) 255 0)
+                                        (quot (bit-and (aget a (+ i c)) 0xff) 4)))))
+              (aset out (+ i 3) (unchecked-byte 255))
+              (recur (inc p) (if bad? (inc differing) differing) (max max-delta d)))))))))
+
+(def golden-dir "test/golden")
+(def output-dir "target/golden")
+
+(defn- update-goldens? [] (= "1" (System/getenv "UPDATE_GOLDEN")))
+
+(defn matches-golden?
+  "Assert (with clojure.test/is) that `image` matches golden `name`.
+
+  The software renderer is deterministic, so by default no pixel may differ.
+  CoreText's antialiasing can shift slightly between macOS releases; loosen
+  :tolerance (per channel, 0-255) or :max-differing (pixel count) for a
+  test that must survive that, or regenerate the goldens."
+  [name image & {:keys [tolerance max-differing] :or {tolerance 0 max-differing 0}}]
+  (let [golden (fs/path golden-dir (str name ".png"))
+        actual (fs/path output-dir (str name "-actual.png"))
+        diff   (fs/path output-dir (str name "-diff.png"))]
+    (cond
+      (update-goldens?)
+      (do (write-png! image golden)
+          (is true))
+
+      (not (fs/exists? golden))
+      (do (write-png! image actual)
+          (is false (str "no golden image " golden "; the render is at " actual
+                         ". If it looks right, run with UPDATE_GOLDEN=1.")))
+
+      :else
+      (let [{:keys [differing max-delta size-mismatch] d :diff}
+            (diff-images (read-png golden) image tolerance)
+            ok? (and (nil? size-mismatch) (<= differing max-differing))]
+        (if ok?
+          (do (fs/delete-if-exists actual) (fs/delete-if-exists diff))
+          (do (write-png! image actual)
+              (when d (write-png! d diff))))
+        (is ok? (if size-mismatch
+                  (str name ": size " (second size-mismatch) ", golden " (first size-mismatch)
+                       "; see " actual)
+                  (str name ": " differing " pixels differ (max channel delta " max-delta
+                       "); see " actual " and " diff)))))))
+
+;; ---------------------------------------------------------------- sessions
+
+(defn session
+  "A headless editor, `width` x `height` points at `density`. A mutable map
+  in an atom: {:app :canvas :now :clipboard}. Close with `close!`."
+  [& {:keys [width height density clipboard]
+      :or   {width 400 height 300 density 2.0 clipboard ""}}]
+  (let [c (canvas (long (* width density)) (long (* height density)))
+        s (atom {:canvas c :now 0 :clipboard clipboard :density density})]
+    (swap! s assoc :app (app/create {:renderer     (:renderer c)
+                                     :density-fn   (constantly (double density))
+                                     :clipboard-fn #(:clipboard @s)
+                                     :now          0}))
+    s))
+
+(defn close! [s]
+  (app/destroy! (:app @s))
+  (destroy-canvas! (:canvas @s)))
+
+(defmacro with-session
+  "Run `body` with `sym` bound to a new session, closing it afterwards."
+  [[sym & opts] & body]
+  `(let [~sym (session ~@opts)]
+     (try ~@body (finally (close! ~sym)))))
+
+(defn app [s] (:app @s))
+(defn doc [s] (:doc (app s)))
+(defn text [s] (:text (doc s)))
+(defn caret [s] (:caret (doc s)))
+
+(defn send!
+  "Deliver events at the session's current time, then settle the view, as
+  one batch of the real event loop does."
+  [s & events]
+  (swap! s (fn [{:keys [now] :as st}]
+             (assoc st :app (app/settle (reduce #(app/handle %1 %2 now) (:app st) events)))))
+  s)
+
+(defn type!
+  "Type `text` one character (code point) at a time, as keystrokes arrive."
+  [s text]
+  (apply send! s (map (fn [c] {:type :text :text (str c)}) text)))
+
+(defn press!
+  ([s key] (press! s key 0))
+  ([s key mod] (send! s {:type :key :key key :mod mod})))
+
+(defn click! [s x y] (send! s {:type :click :x x :y y}))
+
+(defn compose!
+  "The input method's composition (marked text), as SDL reports it."
+  ([s text] (compose! s text (count text)))
+  ([s text cursor] (send! s {:type :composition :text text :cursor cursor})))
+
+(defn dead-key!
+  "A dead key and the key after it, as macOS reports them: composition of
+  `accent`, composition cleared, then `result` committed.
+  e.g. (dead-key! s \"´\" \"é\") for option-e then e."
+  [s accent result]
+  (compose! s accent 1)
+  (send! s {:type :composition :text "" :cursor 0} {:type :text :text result}))
+
+(defn advance!
+  "Move the session's clock forward `ms`."
+  [s ms]
+  (swap! s update :now + ms)
+  s)
+
+(defn set-clipboard! [s text] (swap! s assoc :clipboard text) s)
+
+(defn resize!
+  "Resize the offscreen canvas to `width` x `height` points."
+  [s width height]
+  (swap! s (fn [{:keys [canvas density] :as st}]
+             (let [st (assoc st :canvas (resize-canvas canvas (long (* width density))
+                                                       (long (* height density))))]
+               (assoc st :app (app/settle (:app st))))))
+  s)
+
+(defn render!
+  "Draw the editor at the session's current time and return the image."
+  [s]
+  (swap! s (fn [st] (assoc st :app (app/draw! (:app st) (:now st)))))
+  (let [r (get-in @s [:canvas :renderer])
+        surface (sdl/check! (sdl/render-read-pixels r ffi/null) "SDL_RenderReadPixels")]
+    (try (surface->image surface) (finally (sdl/destroy-surface surface)))))
