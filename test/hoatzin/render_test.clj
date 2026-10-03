@@ -77,3 +77,30 @@
     (t/type! s "The hoatzin is a bird: ")
     (t/compose! s "ホアツィンは南米の鳥です" 3)
     (t/matches-golden? "composition-across-a-wrap" (t/render! s))))
+
+(deftest ^:integration selection
+  ;; from mid-paragraph, across a wrap and a blank line, into the last
+  ;; paragraph: highlighted behind the text, with no caret
+  (with-session [s]
+    (t/type! s (str hoatzin-text "\n\nIt eats leaves."))
+    (t/press! s sdl/K-UP cmd)
+    (dotimes [_ 30] (t/press! s sdl/K-RIGHT))
+    (t/press! s sdl/K-DOWN (bit-or cmd sdl/KMOD-SHIFT))
+    (dotimes [_ 7] (t/press! s sdl/K-LEFT sdl/KMOD-SHIFT))
+    (t/matches-golden? "selection" (t/render! s))
+    (t/send! s {:type :focus :focused? false})
+    (t/matches-golden? "selection-unfocused" (t/render! s))))
+
+(deftest ^:integration caret-at-a-wrapped-line-end
+  ;; clicking past the end of a wrapped line puts the caret after its space,
+  ;; still on that line
+  (with-session [s :width 800 :height 300]
+    (t/type! s (apply str (repeat 8 "dfffasaghdignisaopgndispagndipagnipasgnid ")))
+    (t/click! s 5000.0 (+ (* 2 24) 10.0))
+    (t/matches-golden? "caret-at-a-wrapped-line-end" (t/render! s))))
+
+(deftest ^:integration double-clicked-word
+  (with-session [s]
+    (t/type! s hoatzin-text)
+    (t/double-click! s 200.0 (+ (* 2 24) 10.0))
+    (t/matches-golden? "double-clicked-word" (t/render! s))))

@@ -127,28 +127,56 @@
       (if (and (pos? j) (> (:start (nth lines j)) u)) (recur (dec j)) j))))
 
 (defn caret
-  "Where the caret for `pos` goes: [x-pixels visual-line]."
-  [L pos]
-  (let [i (para-index L pos)
-        {:keys [p start first-line]} (nth (:paras L) i)
-        u (cp->u16 p (- pos start))
-        j (line-index p u)]
-    [(ct/offset-for-index (:line (nth (:lines p) j)) u) (+ first-line j)]))
+  "Where the caret for `pos` goes: [x-pixels visual-line].
+
+  Where a paragraph wraps, the end of one line and the start of the next are
+  the same position. The caret goes at the start of the next line, or with
+  `upstream?` at the end of the line before (after its trailing space): see
+  `wrap-end?`."
+  ([L pos] (caret L pos false))
+  ([L pos upstream?]
+   (let [i (para-index L pos)
+         {:keys [p start first-line]} (nth (:paras L) i)
+         u (cp->u16 p (- pos start))
+         j (line-index p u)
+         j (if (and upstream? (pos? j) (= u (:start (nth (:lines p) j)))) (dec j) j)]
+     [(ct/offset-for-index (:line (nth (:lines p) j)) u) (+ first-line j)])))
+
+(defn wrap-end?
+  "Whether `pos` is the end of visual line `k` where its paragraph wraps
+  onto the next line: a caret placed there for line `k` belongs upstream."
+  [L k pos]
+  (let [[i j] (nth (:lines L) k)
+        {:keys [p start]} (nth (:paras L) i)
+        lines (:lines p)]
+    (and (< j (dec (count lines)))
+         (= pos (+ start (u16->cp p (:end (nth lines j))))))))
 
 (defn position-at
-  "The document position nearest pixel offset `x` on visual line `k`."
+  "The document position nearest pixel offset `x` on visual line `k`. Past
+  the end of a wrapped line that is the wrap point (see `wrap-end?`)."
   [L k x]
   (let [[i j] (nth (:lines L) k)
         {:keys [p start]} (nth (:paras L) i)
-        {:keys [lines string]} p
-        {lo :start hi :end line :line} (nth lines j)
-        u (-> (or (ct/index-for-position line x) lo) (max lo) (min hi))
-        ;; The end of a wrapped line is the start of the next one; stay on
-        ;; this line by stopping before its last character.
-        u (if (and (= u hi) (> hi lo) (< j (dec (count lines))))
-            (first (ct/composed-range string (dec u)))
-            u)]
+        {lo :start hi :end line :line} (nth (:lines p) j)
+        u (-> (or (ct/index-for-position line x) lo) (max lo) (min hi))]
     (+ start (u16->cp p u))))
+
+(defn char-at
+  "The document index of the character under pixel offset `x` on visual
+  line `k`, or nil on an empty line."
+  [L k x]
+  (let [[i j] (nth (:lines L) k)
+        {:keys [p start]} (nth (:paras L) i)
+        {lo :start hi :end line :line} (nth (:lines p) j)
+        pos (position-at L k x)
+        u (cp->u16 p (- pos start))]
+    (when (< lo hi)
+      ;; position-at gives the nearest boundary; the character is the one
+      ;; on the side of it that `x` falls.
+      (if (and (> u lo) (or (= u hi) (< x (ct/offset-for-index line u))))
+        (dec pos)
+        pos))))
 
 (defn range-segments
   "The visual extent of positions [a, b): a [k x0 x1] for each visual line
@@ -164,6 +192,19 @@
               x1 (ct/offset-for-index line (min ub le))]
         :when (< x0 x1)]
     [(+ first-line j) x0 x1]))
+
+(defn selection-segments
+  "Like `range-segments`, plus a `newline-width` px box after the last line
+  of each paragraph whose newline the range covers, so a selection shows
+  where it crosses paragraph ends and blank lines."
+  [L a b newline-width]
+  (let [paras (butlast (:paras L))]       ; the last paragraph has no newline
+    (sort (concat (range-segments L a b)
+                  (for [{:keys [p end first-line]} paras
+                        :when (and (<= a end) (< end b))
+                        :let [{:keys [line] :as ln} (peek (:lines p))
+                              x (ct/offset-for-index line (:end ln))]]
+                    [(+ first-line (dec (count (:lines p)))) x (+ x newline-width)])))))
 
 (defn line-start [L k] (position-at L k -1.0e9))
 (defn line-end   [L k] (position-at L k 1.0e9))

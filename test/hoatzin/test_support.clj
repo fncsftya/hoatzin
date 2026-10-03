@@ -14,6 +14,7 @@
             [clojure.test :refer [is]]
             [jolt.ffi :as ffi]
             [hoatzin.app :as app]
+            [hoatzin.editor :as ed]
             [hoatzin.sdl :as sdl]))
 
 ;; ---------------------------------------------------------------- canvas
@@ -149,7 +150,8 @@
 
 (defn session
   "A headless editor, `width` x `height` points at `density`. A mutable map
-  in an atom: {:app :canvas :now :clipboard}. Close with `close!`."
+  in an atom: {:app :canvas :now :clipboard}; the editor reads and writes
+  :clipboard. Close with `close!`."
   [& {:keys [width height density clipboard]
       :or   {width 400 height 300 density 2.0 clipboard ""}}]
   (let [c (canvas (long (* width density)) (long (* height density)))
@@ -157,6 +159,7 @@
     (swap! s assoc :app (app/create {:renderer     (:renderer c)
                                      :density-fn   (constantly (double density))
                                      :clipboard-fn #(:clipboard @s)
+                                     :set-clipboard-fn #(swap! s assoc :clipboard %)
                                      :now          0}))
     s))
 
@@ -174,13 +177,15 @@
 (defn doc [s] (:doc (app s)))
 (defn text [s] (:text (doc s)))
 (defn caret [s] (:caret (doc s)))
+(defn selected [s] (ed/selected-text (doc s)))
 
 (defn send!
   "Deliver events at the session's current time, then settle the view, as
   one batch of the real event loop does."
   [s & events]
-  (swap! s (fn [{:keys [now] :as st}]
-             (assoc st :app (app/settle (reduce #(app/handle %1 %2 now) (:app st) events)))))
+  ;; Not inside swap!: handling may write the clipboard, which is in `s` too.
+  (let [{:keys [now app]} @s]
+    (swap! s assoc :app (app/settle (reduce #(app/handle %1 %2 now) app events))))
   s)
 
 (defn type!
@@ -192,7 +197,23 @@
   ([s key] (press! s key 0))
   ([s key mod] (send! s {:type :key :key key :mod mod})))
 
-(defn click! [s x y] (send! s {:type :click :x x :y y}))
+(defn click!
+  "A left click; :clicks 2 for a double click."
+  [s x y & {:keys [mod clicks] :or {mod 0 clicks 1}}]
+  (send! s {:type :click :x x :y y :mod mod :clicks clicks} {:type :release}))
+
+(defn double-click!
+  "A double click: the first click, then the second, as SDL reports them."
+  [s x y]
+  (click! s x y)
+  (click! s x y :clicks 2))
+
+(defn drag!
+  "Press at the first point, move through the rest, and release."
+  [s [x y] & points]
+  (apply send! s (concat [{:type :click :x x :y y}]
+                         (map (fn [[x y]] {:type :drag :x x :y y}) points)
+                         [{:type :release}])))
 
 (defn compose!
   "The input method's composition (marked text), as SDL reports it."

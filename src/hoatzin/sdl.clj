@@ -17,14 +17,19 @@
 (def EVENT-KEY-DOWN              0x300)
 (def EVENT-TEXT-EDITING          0x302)
 (def EVENT-TEXT-INPUT            0x303)
+(def EVENT-MOUSE-MOTION          0x400)
 (def EVENT-MOUSE-BUTTON-DOWN     0x401)
+(def EVENT-MOUSE-BUTTON-UP       0x402)
 (def EVENT-MOUSE-WHEEL           0x403)
 
 ;; Keycodes and modifiers
 (def K-RETURN    0x0d)
 (def K-BACKSPACE 0x08)
 (def K-DELETE    0x7f)
+(def K-A         0x61)
+(def K-C         0x63)
 (def K-V         0x76)
+(def K-X         0x78)
 (def K-HOME      0x4000004a)
 (def K-PAGEUP    0x4000004b)
 (def K-END       0x4000004d)
@@ -34,9 +39,11 @@
 (def K-DOWN      0x40000051)
 (def K-UP        0x40000052)
 (def K-KP-ENTER  0x40000058)
+(def KMOD-SHIFT  0x0003)
 (def KMOD-GUI    0x0c00)
 
 (def BUTTON-LEFT 1)
+(def BUTTON-LMASK 1)
 (def MOUSEWHEEL-FLIPPED 1)
 (def SYSTEM-CURSOR-TEXT 1)
 
@@ -50,8 +57,12 @@
 (def O-edit-text 24)      ; SDL_TextEditingEvent.text (const char *)
 (def O-edit-start 32)     ; SDL_TextEditingEvent.start (Sint32, -1 if unset)
 (def O-button-button 24)  ; SDL_MouseButtonEvent.button (Uint8)
+(def O-button-clicks 26)  ; SDL_MouseButtonEvent.clicks (Uint8)
 (def O-button-x 28)       ; SDL_MouseButtonEvent.x (float)
 (def O-button-y 32)
+(def O-motion-state 24)   ; SDL_MouseMotionEvent.state (SDL_MouseButtonFlags)
+(def O-motion-x 28)       ; SDL_MouseMotionEvent.x (float)
+(def O-motion-y 32)
 (def O-wheel-y 28)        ; SDL_MouseWheelEvent.y (float)
 (def O-wheel-direction 32)
 
@@ -84,7 +95,9 @@
 
 (ffi/defcfn start-text-input    "SDL_StartTextInput"   [:pointer] :bool)
 (ffi/defcfn set-text-input-area "SDL_SetTextInputArea" [:pointer :pointer :int] :bool)
+(ffi/defcfn get-mod-state       "SDL_GetModState"      [] :uint16)
 (ffi/defcfn get-clipboard-text* "SDL_GetClipboardText" [] :pointer)
+(ffi/defcfn set-clipboard-text  "SDL_SetClipboardText" [:string] :bool)
 
 (ffi/defcfn create-system-cursor "SDL_CreateSystemCursor" [:int] :pointer)
 (ffi/defcfn set-cursor           "SDL_SetCursor"          [:pointer] :bool)

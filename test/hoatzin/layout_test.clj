@@ -50,7 +50,9 @@
         (is (= sentence (apply str lines)) "the lines rejoin to the paragraph")
         (is (every? #(str/ends-with? % " ") (butlast lines)) "breaks fall after spaces")
         (doseq [k (range (count lines))]
-          (let [[x _] (layout/caret L (layout/line-end L k))]
+          ;; trailing whitespace may hang past the width; the rest may not
+          (let [[x _] (layout/caret L (- (layout/line-end L k)
+                                         (count (re-find #"\s*$" (nth lines k)))))]
             (is (<= x 300) (str "line " k " fits the wrap width"))))))))
 
 (deftest wider-means-fewer-lines
@@ -75,9 +77,38 @@
       (let [start-1 (layout/line-start L 1)]
         (is (= 1 (second (layout/caret L start-1)))
             "a position at a wrap point is drawn at the start of the next line")
-        (is (= 0 (second (layout/caret L (layout/line-end L 0))))
-            "the end of a wrapped line stays on that line")
-        (is (= start-1 (layout/position-at L 1 0.0)))))))
+        (is (= start-1 (layout/line-end L 0))
+            "the end of a wrapped line is the start of the next")
+        (is (= start-1 (layout/position-at L 0 1.0e9)) "as is clicking past it")
+        (is (= start-1 (layout/position-at L 1 0.0)))
+        (testing "upstream, the caret is drawn at the end of the line"
+          (let [[x k] (layout/caret L start-1 true)
+                [before-space _] (layout/caret L (dec start-1))]
+            (is (= 0 k))
+            (is (> x before-space) "after the trailing space")))
+        (is (= (layout/caret L 4) (layout/caret L 4 true))
+            "affinity only matters at a wrap point")
+        (is (= [0.0 0] (layout/caret L 0 true)) "or the start of a paragraph")
+        (testing "wrap-end?"
+          (is (layout/wrap-end? L 0 start-1))
+          (is (not (layout/wrap-end? L 1 start-1)) "the same position, for the next line")
+          (is (not (layout/wrap-end? L 0 (dec start-1))))
+          (let [last-k (dec (layout/line-count L))]
+            (is (not (layout/wrap-end? L last-k (layout/line-end L last-k)))
+                "the paragraph's end is no wrap point")))))))
+
+(deftest char-at
+  (with-layout 2000 "ab cd\n\nx"
+    (fn [L _]
+      (let [x #(first (layout/caret L %))
+            mid #(/ (+ (x %) (x (inc %))) 2.0)]
+        (is (= 0 (layout/char-at L 0 -50.0)) "before the line is its first character")
+        (is (= 0 (layout/char-at L 0 (mid 0))))
+        (is (= 1 (layout/char-at L 0 (- (x 2) 0.5))) "either side of a boundary")
+        (is (= 2 (layout/char-at L 0 (+ (x 2) 0.5))))
+        (is (= 4 (layout/char-at L 0 5000.0)) "past the end is the last character")
+        (is (nil? (layout/char-at L 1 0.0)) "nothing on a blank line")
+        (is (= 7 (layout/char-at L 2 5000.0)))))))
 
 (deftest grapheme-clusters
   ;; 👍🏽 is two code points (thumb + skin tone); é here is e + U+0301.
@@ -125,6 +156,21 @@
           (is (zero? (second (second segs))) "the second segment starts at the margin")))
       (testing "an empty range covers nothing"
         (is (empty? (layout/range-segments L 5 5)))))))
+
+(deftest selection-segments
+  (with-layout 300 "one\n\nthree"
+    (fn [L _]
+      (testing "within a paragraph it is just the range"
+        (is (= (layout/range-segments L 0 2) (layout/selection-segments L 0 2 5))))
+      (testing "a covered newline adds a box at its line's end"
+        (let [[x-end _] (layout/caret L 3)]
+          (is (= [[0 x-end (+ x-end 5)]] (layout/selection-segments L 3 4 5)))))
+      (testing "a blank line in the range shows as selected"
+        (let [segs (layout/selection-segments L 1 7 5)]
+          (is (= [0 0 1 2] (mapv first segs)) "text then newline on line 0")
+          (is (= [1 0.0 5.0] (nth segs 2)))))
+      (testing "stopping at a newline doesn't cover it"
+        (is (= [0] (mapv first (layout/selection-segments L 0 3 5))))))))
 
 (deftest paragraph-cache
   (let [ctx (layout/context *font* 300)]
