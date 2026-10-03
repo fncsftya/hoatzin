@@ -1,31 +1,73 @@
 (ns hoatzin.sdl
-  "Minimal SDL3 bindings: just enough to open a window and draw textures."
+  "Minimal SDL3 bindings: a window, input events, and textured drawing."
   (:require [jolt.ffi :as ffi]))
 
 (def INIT-VIDEO 0x00000020)
-(def WINDOW-RESIZABLE         0x0000000000000020)
+(def WINDOW-RESIZABLE          0x0000000000000020)
 (def WINDOW-HIGH-PIXEL-DENSITY 0x0000000000002000)
 
-(def EVENT-QUIT 0x100)
-(def EVENT-KEY-DOWN 0x300)
-(def K-ESCAPE 0x1b)
+;; Event types
+(def EVENT-QUIT                  0x100)
+(def EVENT-WINDOW-EXPOSED        0x204)
+(def EVENT-WINDOW-RESIZED        0x206)
+(def EVENT-WINDOW-PIXEL-SIZE-CHANGED 0x207)
+(def EVENT-WINDOW-FOCUS-GAINED   0x20e)
+(def EVENT-WINDOW-FOCUS-LOST     0x20f)
+(def EVENT-WINDOW-DISPLAY-SCALE-CHANGED 0x214)
+(def EVENT-KEY-DOWN              0x300)
+(def EVENT-TEXT-INPUT            0x303)
+(def EVENT-MOUSE-BUTTON-DOWN     0x401)
+(def EVENT-MOUSE-WHEEL           0x403)
+
+;; Keycodes and modifiers
+(def K-RETURN    0x0d)
+(def K-BACKSPACE 0x08)
+(def K-DELETE    0x7f)
+(def K-V         0x76)
+(def K-HOME      0x4000004a)
+(def K-PAGEUP    0x4000004b)
+(def K-END       0x4000004d)
+(def K-PAGEDOWN  0x4000004e)
+(def K-RIGHT     0x4000004f)
+(def K-LEFT      0x40000050)
+(def K-DOWN      0x40000051)
+(def K-UP        0x40000052)
+(def K-KP-ENTER  0x40000058)
+(def KMOD-GUI    0x0c00)
+
+(def BUTTON-LEFT 1)
+(def MOUSEWHEEL-FLIPPED 1)
+(def SYSTEM-CURSOR-TEXT 1)
 
 ;; SDL_Event is a 128-byte union; every member starts with a Uint32 type.
+;; Offsets checked against the SDL 3.4 headers with offsetof.
 (def EVENT-SIZE 128)
 (def O-event-type 0)
-(def O-key-key 28)       ; SDL_KeyboardEvent.key (SDL_Keycode)
+(def O-key-key 28)        ; SDL_KeyboardEvent.key (SDL_Keycode)
+(def O-key-mod 32)        ; SDL_KeyboardEvent.mod (SDL_Keymod, Uint16)
+(def O-text-text 24)      ; SDL_TextInputEvent.text (const char *)
+(def O-button-button 24)  ; SDL_MouseButtonEvent.button (Uint8)
+(def O-button-x 28)       ; SDL_MouseButtonEvent.x (float)
+(def O-button-y 32)
+(def O-wheel-y 28)        ; SDL_MouseWheelEvent.y (float)
+(def O-wheel-direction 32)
 
 (def PIXELFORMAT-RGBA32 0x16762004)  ; ABGR8888: R,G,B,A bytes on little-endian
 (def TEXTUREACCESS-STATIC 0)
 (def BLENDMODE-BLEND-PREMULTIPLIED 0x10)
 
 (def frect (ffi/layout [:struct [[:x :float] [:y :float] [:w :float] [:h :float]]]))
+(def rect  (ffi/layout [:struct [[:x :int] [:y :int] [:w :int] [:h :int]]]))
 
 (ffi/defcfn init        "SDL_Init"        [:uint] :bool)
 (ffi/defcfn quit        "SDL_Quit"        [] :void)
 (ffi/defcfn get-error   "SDL_GetError"    [] :string)
-(ffi/defcfn delay       "SDL_Delay"       [:uint] :void :blocking)
+(ffi/defcfn get-ticks   "SDL_GetTicks"    [] :uint64)
+(ffi/defcfn sdl-free    "SDL_free"        [:pointer] :void)
 (ffi/defcfn poll-event  "SDL_PollEvent"   [:pointer] :bool)
+(ffi/defcfn wait-event-timeout "SDL_WaitEventTimeout" [:pointer :int] :bool :blocking)
+(ffi/defcfn convert-event-to-render-coordinates "SDL_ConvertEventToRenderCoordinates"
+  [:pointer :pointer] :bool)
 
 (ffi/defcfn create-window-and-renderer "SDL_CreateWindowAndRenderer"
   [:string :int :int :uint64 :pointer :pointer] :bool)
@@ -35,9 +77,19 @@
 (ffi/defcfn get-render-output-size "SDL_GetCurrentRenderOutputSize"
   [:pointer :pointer :pointer] :bool)
 
+(ffi/defcfn start-text-input    "SDL_StartTextInput"   [:pointer] :bool)
+(ffi/defcfn set-text-input-area "SDL_SetTextInputArea" [:pointer :pointer :int] :bool)
+(ffi/defcfn get-clipboard-text* "SDL_GetClipboardText" [] :pointer)
+
+(ffi/defcfn create-system-cursor "SDL_CreateSystemCursor" [:int] :pointer)
+(ffi/defcfn set-cursor           "SDL_SetCursor"          [:pointer] :bool)
+(ffi/defcfn destroy-cursor       "SDL_DestroyCursor"      [:pointer] :void)
+
 (ffi/defcfn set-render-draw-color "SDL_SetRenderDrawColor"
   [:pointer :uint8 :uint8 :uint8 :uint8] :bool)
+(ffi/defcfn set-render-clip-rect "SDL_SetRenderClipRect" [:pointer :pointer] :bool)
 (ffi/defcfn render-clear      "SDL_RenderClear"     [:pointer] :bool)
+(ffi/defcfn render-fill-rect  "SDL_RenderFillRect"  [:pointer :pointer] :bool)
 (ffi/defcfn render-present    "SDL_RenderPresent"   [:pointer] :bool)
 
 (ffi/defcfn create-texture  "SDL_CreateTexture"  [:pointer :uint :int :int :int] :pointer)
@@ -62,3 +114,25 @@
     (ffi/with-out [ph :int]
       (check! (get-render-output-size renderer pw ph) "SDL_GetCurrentRenderOutputSize")
       [(ffi/read pw :int) (ffi/read ph :int)])))
+
+(defn clipboard-text
+  "The clipboard's text, or \"\" when it holds none."
+  []
+  (let [p (get-clipboard-text*)]
+    (if (ffi/null? p)
+      ""
+      (try (ffi/ptr->string p) (finally (sdl-free p))))))
+
+(defn set-frect! [p x y w h]
+  (ffi/write-field p frect :x (float x))
+  (ffi/write-field p frect :y (float y))
+  (ffi/write-field p frect :w (float w))
+  (ffi/write-field p frect :h (float h))
+  p)
+
+(defn set-rect! [p x y w h]
+  (ffi/write-field p rect :x (int x))
+  (ffi/write-field p rect :y (int y))
+  (ffi/write-field p rect :w (int w))
+  (ffi/write-field p rect :h (int h))
+  p)
