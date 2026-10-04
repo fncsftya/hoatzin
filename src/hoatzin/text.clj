@@ -9,7 +9,8 @@
 
   Positions are code-point indices, as Jolt strings count them, with a
   newline between lines. `count` and `str` work on a Text, and two Texts
-  are `=` when their contents are."
+  are `=` when their contents are: comparing two that share history looks
+  only at the lines they don't share."
   (:refer-clojure :exclude [replace])
   (:require [clojure.string :as str]
             [hoatzin.tree :as tree]))
@@ -18,7 +19,7 @@
 ;; root's :len less one: the last line has no newline.
 (def ^:private spec {:len #(inc (count %)) :w (constantly 0)})
 
-(declare lines)
+(declare lines changed-lines)
 
 (deftype Text [root]
   Object
@@ -27,7 +28,9 @@
         (and (instance? Text o)
              (= (tree/len root) (tree/len (.-root ^Text o)))
              (= (tree/n root) (tree/n (.-root ^Text o)))
-             (= (lines this) (lines o)))))
+             ;; lines that are the same object are the same text
+             (let [[i ja jb] (changed-lines this o)]
+               (= (lines this i ja) (lines o i jb))))))
   (hashCode [this] (hash (lines this)))
   (toString [this]
     (let [sb (StringBuilder.)]

@@ -4,16 +4,23 @@
 
   Nothing here reads the OS event queue, the clock, the clipboard or files:
   the host passes time into `handle`/`draw!` and supplies :density-fn,
-  :clipboard-fn (read the clipboard), :set-clipboard-fn (write it) and
-  :open-dialog-fn (show a file dialog, whose file comes back as :opened).
+  :clipboard-fn (read the clipboard), :set-clipboard-fn (write it),
+  :open-dialog-fn (show a file dialog, whose file comes back as :opened),
+  :save-dialog-fn (show a save dialog starting at the path it is given, or
+  nil; the choice comes back as :save-chosen) and :write-file-fn (write
+  string s to path p, returning nil, or why it could not).
   That is what lets tests drive the editor headlessly and deterministically.
 
   The editor is modal. In :normal mode the text is left alone: keys move the
   caret and select, `i` enters :insert mode, and the caret is a block. In
   :insert mode typing edits the text, and escape goes back to :normal.
   `:` starts a command line (:command mode) in the status bar; return runs
-  it, escape abandons it. Commands:
+  it, escape abandons it, and tab completes the command's name. A command
+  runs from any prefix that begins no other, so `:w` is `:write`. Commands:
     :open                           choose a file and load it
+    :write                          save the file (choosing where, if it
+                                    has no path yet)
+    :save                           choose where to save the file, and save it
 
   Events:
     {:type :text  :text s}          committed text input; in normal mode, a
@@ -37,6 +44,8 @@
     {:type :opened :path p :text s} the file chosen in the open dialog, or
     {:type :opened :path p :error e} why it could not be read (and :path
                                     may be missing, if the dialog failed)
+    {:type :save-chosen :path p}    where the save dialog chose to save, or
+    {:type :save-chosen :error e}   why the dialog failed
     {:type :expose}                 the window needs repainting
     {:type :quit}"
   (:require [clojure.string :as str]
@@ -51,6 +60,7 @@
 (def defaults
   {:family      ct/default-family
    :font-size   20             ; points; scaled by the pixel density
+   :status-family "Menlo"      ; monospace, and on every macOS install
    :status-font-size 13        ; points: the status bar's mode label
    :status-padding 4           ; points above and below the label
    :margin      24             ; points
@@ -85,11 +95,14 @@
 ;;   :command                              the command line's text, after `:`
 ;;   :message                              shown in the status bar until the
 ;;                                         next keystroke
-;;   :path                                 the file loaded, if any
+;;   :path                                 the file loaded or saved, if any
+;;   :saved                                the text as it is in that file
+;;   :modified? :compared                  whether the text differs from
+;;                                         :saved, as of :compared [text saved]
 ;;   :density :font                        the font, at the current density
 ;;   :status                               the status bar's {:font :metrics
 ;;                                         :lines}, :lines an atom caching
-;;                                         its text, set as a line
+;;                                         its texts, set as lines
 ;;   :status-textures                      its label texture cache
 ;;   :ctx :layout :laid-out                layout context, layout, its text
 ;;   :textures :scratch                    line texture cache, FFI scratch
@@ -150,33 +163,57 @@
 (defn- status-view
   "The status bar's font, its metrics and a cache for its text, set."
   [app]
-  (let [font (ct/font (:family app) (* (:status-font-size app) (:density app)))]
+  (let [font (ct/font (:status-family app) (* (:status-font-size app) (:density app)))]
     {:font font :metrics (layout/metrics font) :lines (atom {})}))
 
 (defn- release-status-lines! [lines]
   (run! #(ct/release (:line %)) (vals @lines))
   (reset! lines {}))
 
+(defn- file-name [path] (some-> path (str/split #"/") peek))
+
 (defn- status-text
-  "What the status bar says: the command line, a message, or the mode."
+  "What the status bar says on its left: the command line, a message, or
+  the mode."
   [{:keys [mode command message]}]
   (cond (= mode :command) (str ":" command)
         message           message
         :else             (mode-labels mode)))
 
+(defn- status-file
+  "What the status bar says on its right: the file's name, and [+] while
+  the text differs from what is in it."
+  [{:keys [path modified?]}]
+  (str (or (file-name path) "[No Name]") (when modified? " [+]")))
+
+(def ^:private status-lines-kept
+  "How many status texts are kept set as lines. The command line's changes
+  with every keystroke, so they are all dropped once there are this many."
+  8)
+
 (defn- status-line
-  "The status bar's text set as a line, as hoatzin.coretext's line functions
-  take it, with its UTF-16 :length. Only the latest text is kept: it
-  changes with every keystroke on the command line."
-  [{:keys [status] :as app}]
-  (let [text  (status-text app)
-        lines (:lines status)]
+  "`text` set as a line in the status bar's font, as hoatzin.coretext's
+  line functions take it, with its UTF-16 :length."
+  [{:keys [status]} text]
+  (let [lines (:lines status)]
     (or (get @lines text)
         (let [ln {:line (ct/make-line (:font status) text) :base 0
                   :length (ct/utf16-length text)}]
-          (release-status-lines! lines)
+          (when (>= (count @lines) status-lines-kept) (release-status-lines! lines))
           (swap! lines assoc text ln)
           ln))))
+
+(defn- sync-modified
+  "Whether the text differs from the file, compared only when either has
+  changed since last time. Texts share the lines an edit left alone, which
+  compare by identity, so even then this costs little."
+  [{:keys [doc saved compared] :as app}]
+  (let [text (:text doc)]
+    (if (and (identical? text (first compared)) (identical? saved (second compared)))
+      app
+      (let [modified? (not= text saved)]
+        (cond-> (assoc app :compared [text saved] :modified? modified?)
+          (not= modified? (:modified? app)) (assoc :dirty? true))))))
 
 (defn- release-view! [{:keys [ctx textures font status status-textures]}]
   (some-> ctx layout/release-context)
@@ -208,7 +245,8 @@
                   ;; Re-wrapping moves every line; keep the caret's in view.
                   (assoc app :ctx (layout/context (:font app) wrap) :layout nil :follow? true)))
         shown (display-key app)
-        app (if (= size (:size app)) app (assoc app :size size :dirty? true))]
+        app (if (= size (:size app)) app (assoc app :size size :dirty? true))
+        app (sync-modified app)]
     (layout/trim! (:ctx app))
     (if (and (:layout app) (same-display? shown (:laid-out app)))
       app
@@ -290,7 +328,8 @@
 (defn create
   "A new, empty editor drawing with `:renderer`. Options (all but :renderer
   optional): :density-fn, :clipboard-fn, :set-clipboard-fn, :open-dialog-fn,
-  :now, :mode (:normal unless given), and any key of `defaults`.
+  :save-dialog-fn, :write-file-fn, :now, :mode (:normal unless given), and
+  any key of `defaults`.
   Release it with `destroy!`."
   [{:keys [now] :or {now 0} :as opts}]
   (settle (merge defaults
@@ -298,10 +337,13 @@
                   :clipboard-fn (constantly "")
                   :set-clipboard-fn (fn [_])
                   :open-dialog-fn (fn [])
+                  :save-dialog-fn (fn [_])
+                  :write-file-fn (fn [_ _] "no file system")
                   :textures     (textures/cache)
                   :status-textures (textures/cache)
                   :scratch      {:frect (ffi/alloc sdl/frect) :irect (ffi/alloc sdl/rect)}
                   :doc          ed/empty-doc
+                  :saved        (:text ed/empty-doc)
                   :mode         :normal
                   :scroll       0
                   :focused?     true
@@ -530,15 +572,63 @@
 (defn- leave-command [app now]
   (-> app (enter-mode now :normal) (dissoc :command)))
 
+(defn- file-lines
+  "How many lines `t` has, as an editor counts them: a final newline ends
+  the last line rather than starting another."
+  [t]
+  (let [n (text/line-count t)]
+    (if (and (> n 1) (= "" (text/line t (dec n)))) (dec n) n)))
+
+(defn- write-file
+  "Write the text to `path`, which is then the file it is the text of."
+  [app path]
+  (let [t (get-in app [:doc :text])
+        file (file-name path)]
+    (assoc (if-let [error ((:write-file-fn app) path (str t))]
+             (assoc app :message (str "Can't write " file ": " error))
+             (assoc app :path path :saved t
+                        :message (str "\"" file "\" " (file-lines t) " lines written")))
+           :dirty? true)))
+
+(defn- save-as
+  "Ask where to save; the answer comes back as :save-chosen."
+  [app]
+  ((:save-dialog-fn app) (:path app))
+  app)
+
+(def ^:private commands
+  {"open"  (fn [app] ((:open-dialog-fn app)) app)
+   "write" (fn [app] (if-let [path (:path app)] (write-file app path) (save-as app)))
+   "save"  save-as})
+
+(defn- command-names
+  "The commands `typed` could mean: the one it names, else those it begins."
+  [typed]
+  (if (contains? commands typed)
+    [typed]
+    (filterv #(str/starts-with? % typed) (sort (keys commands)))))
+
 (defn- run-command
   "Run the command line, back in normal mode."
   [app now]
   (let [command (str/trim (:command app))
-        app     (leave-command app now)]
-    (case command
-      ""     app
-      "open" (do ((:open-dialog-fn app)) app)
-      (assoc app :message (str "Not an editor command: " command)))))
+        app     (leave-command app now)
+        names   (command-names command)]
+    (cond
+      (= "" command)     app
+      (= 1 (count names)) ((commands (first names)) app)
+      (seq names)        (assoc app :message (str "Ambiguous command: " command
+                                                  " (" (str/join ", " names) ")"))
+      :else              (assoc app :message (str "Not an editor command: " command)))))
+
+(defn- shared-start [a b]
+  (subs a 0 (count (take-while true? (map = a b)))))
+
+(defn- complete
+  "The command line completed as far as the commands it could mean agree."
+  [command]
+  (let [names (command-names (str/triml command))]
+    (if (seq names) (reduce shared-start names) command)))
 
 (defn- on-command-key
   "A key on the command line. Other keys leave the document alone."
@@ -548,6 +638,7 @@
       sdl/K-ESCAPE    (leave-command app now)
       sdl/K-RETURN    (run-command app now)
       sdl/K-KP-ENTER  (run-command app now)
+      sdl/K-TAB       (assoc app :command (complete command) :dirty? true :blink-from now)
       ;; Backspacing past the `:` leaves the command line.
       sdl/K-BACKSPACE (if (empty? command)
                         (leave-command app now)
@@ -570,23 +661,16 @@
       ":" (-> app (enter-mode now :command) (assoc :command ""))
       app)))
 
-(defn- file-lines
-  "How many lines `t` has, as an editor counts them: a final newline ends
-  the last line rather than starting another."
-  [t]
-  (let [n (text/line-count t)]
-    (if (and (> n 1) (= "" (text/line t (dec n)))) (dec n) n)))
-
 (defn- load-file
   "The file chosen to open: loaded with the caret at its start, or why not."
   [app now {:keys [path text error]}]
-  (let [file (some-> path (str/split #"/") peek)]
+  (let [file (file-name path)]
     (if error
       (assoc app :message (str "Can't open " (or file "a file") ": " error) :dirty? true)
       (let [t (text/of (normalize-newlines text))]
         (-> app
             (assoc :doc (assoc ed/empty-doc :text t)
-                   :path path :scroll 0 :goal-x nil :upstream? false
+                   :path path :saved t :scroll 0 :goal-x nil :upstream? false
                    :message (str "\"" file "\" " (file-lines t) " lines"))
             (dissoc :composition :dragging? :drag-word :drag-point)
             (touched now))))))
@@ -626,6 +710,9 @@
       :wheel  (on-wheel app (:dy event))
       :focus  (assoc app :focused? (:focused? event) :blink-from now :dirty? true)
       :opened (load-file app now event)
+      :save-chosen (if-let [error (:error event)]
+                     (assoc app :message (str "Can't save: " error) :dirty? true)
+                     (write-file app (:path event)))
       :expose (assoc app :dirty? true)
       app)))
 
@@ -663,7 +750,7 @@
   "A bar at the end of the command line."
   [{:keys [status] :as app}]
   (let [{:keys [caret-top caret-height]} (:metrics status)
-        {:keys [length] :as ln} (status-line app)
+        {:keys [length] :as ln} (status-line app (status-text app))
         x (ct/offset-for-index ln length)]
     [(+ (px app (:margin app)) (long (Math/floor x)))
      (+ (text-height app) (px app (:status-padding app)) caret-top)
@@ -766,25 +853,42 @@
     (sdl/set-render-draw-color renderer r g b 255)
     (sdl/render-fill-rect renderer (sdl/set-frect! (:frect scratch) x y w h))))
 
-(defn- draw-status-bar!
-  "The bar along the bottom: the mode, a message or the command line."
-  [app]
+(defn- status-width
+  "How wide `text` is in the status bar, in render pixels."
+  [app text]
+  (let [{:keys [length] :as ln} (status-line app text)]
+    (long (Math/ceil (ct/offset-for-index ln length)))))
+
+(defn- draw-status-text!
+  "`text` in the status bar, starting at render pixel `x`."
+  [app text x]
   (let [{:keys [renderer scratch status status-textures]} app
-        frect (:frect scratch)
-        [w] (:size app)
-        top (text-height app)
-        [r g b] (:status-background app)
-        {:keys [line]} (status-line app)
+        {:keys [line]} (status-line app text)
         {:keys [texture width height pad] base :baseline}
-        (textures/fetch! status-textures renderer (status-text app) line
-                         (:status-foreground app))]
-    (sdl/set-render-draw-color renderer r g b 255)
-    (sdl/render-fill-rect renderer (sdl/set-frect! frect 0 top w (status-height app)))
+        (textures/fetch! status-textures renderer text line (:status-foreground app))]
     (sdl/render-texture renderer texture ffi/null
-                        (sdl/set-frect! frect (- (px app (:margin app)) pad)
-                                        (+ top (px app (:status-padding app))
+                        (sdl/set-frect! (:frect scratch) (- x pad)
+                                        (+ (text-height app) (px app (:status-padding app))
                                            (get-in status [:metrics :baseline]) (- base))
-                                        width height))
+                                        width height))))
+
+(defn- draw-status-bar!
+  "The bar along the bottom: the mode, a message or the command line on
+  the left, and the file on the right, unless the left runs into it."
+  [app]
+  (let [{:keys [renderer scratch status-textures]} app
+        [w] (:size app)
+        m (px app (:margin app))
+        [r g b] (:status-background app)
+        left  (status-text app)
+        right (status-file app)
+        right-x (- w m (status-width app right))]
+    (sdl/set-render-draw-color renderer r g b 255)
+    (sdl/render-fill-rect renderer (sdl/set-frect! (:frect scratch) 0 (text-height app)
+                                                   w (status-height app)))
+    (draw-status-text! app left m)
+    (when (< (+ m (status-width app left) m) right-x)
+      (draw-status-text! app right right-x))
     (textures/end-frame! status-textures)))
 
 (defn draw!

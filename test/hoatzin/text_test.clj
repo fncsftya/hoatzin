@@ -76,3 +76,16 @@
         (let [t3 (text/replace t2 5 (- (count t2) 5) "")]
           (is (= (str (subs s 0 5) (subs s (- (count s) 5))) (str t3)))
           (is (= [0 100000 1] (text/changed-lines t2 t3))))))))
+
+(deftest equality-across-edits
+  (let [t (text/of (str/join "\n" (map #(str "line " %) (range 2000))))
+        typed (text/insert t 5000 "x")
+        undone (text/replace typed 5000 5001 "")]
+    (is (= t undone) "an edit undone by hand is the same text")
+    (is (let [[i] (text/line-at t 5000)]
+          (not (identical? (text/line t i) (text/line undone i))))
+        "though the edited line is a new string")
+    (is (not= t typed))
+    (is (not= t (text/replace t 5000 5001 "y")) "same length, different text")
+    (is (not= t (text/replace t 5000 5000 "\n")) "different lines")
+    (is (= (text/insert t 0 "a\nb") (text/of (str "a\nb" t))) "texts with no history in common")))

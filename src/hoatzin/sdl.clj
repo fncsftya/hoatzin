@@ -29,6 +29,7 @@
 (def K-BACKSPACE 0x08)
 (def K-DELETE    0x7f)
 (def K-ESCAPE    0x1b)
+(def K-TAB       0x09)
 (def K-A         0x61)
 (def K-C         0x63)
 (def K-V         0x76)
@@ -108,6 +109,8 @@
 ;; filelist is NULL on error, and empty (its first entry NULL) when cancelled.
 (ffi/defcfn show-open-file-dialog "SDL_ShowOpenFileDialog"
   [:pointer :pointer :pointer :pointer :int :pointer :bool] :void :blocking)
+(ffi/defcfn show-save-file-dialog "SDL_ShowSaveFileDialog"
+  [:pointer :pointer :pointer :pointer :int :pointer] :void :blocking)
 
 (ffi/defcfn create-system-cursor "SDL_CreateSystemCursor" [:int] :pointer)
 (ffi/defcfn set-cursor           "SDL_SetCursor"          [:pointer] :bool)

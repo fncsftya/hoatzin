@@ -792,3 +792,106 @@
         (is (> y (second in-text)) "below the text, in the status bar")
         (is (> x (first in-text)) "after the command")
         (is (app/caret-visible? (t/app s) (:now @s)))))))
+
+(deftest a-prefix-runs-the-command-it-begins
+  (with-session [s :mode :normal]
+    (t/command! s "o")
+    (is (= 1 (:dialogs @s)) ":o is :open")
+    (t/command! s "op")
+    (is (= 2 (:dialogs @s)))
+    (t/command! s "s")
+    (is (= [nil] (:save-dialogs @s)) ":s is :save")
+    (t/command! s "opener")
+    (is (= "Not an editor command: opener" (:message (t/app s))) "more than the name is not a prefix")))
+
+(deftest tab-completes-the-command
+  (with-session [s :mode :normal]
+    (t/type! s ":w")
+    (t/press! s sdl/K-TAB)
+    (is (= "write" (:command (t/app s))))
+    (t/press! s sdl/K-TAB)
+    (is (= "write" (:command (t/app s))) "a complete name stays as it is")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s ":x")
+    (t/press! s sdl/K-TAB)
+    (is (= "x" (:command (t/app s))) "nothing to complete")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s ":")
+    (t/press! s sdl/K-TAB)
+    (is (= "" (:command (t/app s))) "every command begins with nothing")
+    (is (= "" (t/text s)) "the document is untouched")))
+
+(deftest write-saves-the-file
+  (with-session [s]
+    (t/send! s {:type :opened :path "/birds/hoatzin.txt" :text "one\n"})
+    (t/type! s "zero ")
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "w")
+    (is (= {"/birds/hoatzin.txt" "zero one\n"} (:files @s)))
+    (is (= "\"hoatzin.txt\" 1 lines written" (:message (t/app s))))
+    (is (not (:modified? (t/app s))))))
+
+(deftest write-without-a-path-asks-where
+  (with-session [s]
+    (t/type! s "new")
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "write")
+    (is (= [nil] (:save-dialogs @s)))
+    (is (empty? (:files @s)) "nothing is written until a path is chosen")
+    (t/send! s {:type :save-chosen :path "/birds/new.txt"})
+    (is (= {"/birds/new.txt" "new"} (:files @s)))
+    (is (= "/birds/new.txt" (:path (t/app s))))
+    (t/command! s "write")
+    (is (= [nil] (:save-dialogs @s)) "once it has one, it is written there")))
+
+(deftest save-asks-where-starting-at-the-file
+  (with-session [s :mode :normal]
+    (t/send! s {:type :opened :path "/birds/hoatzin.txt" :text "one"})
+    (t/command! s "save")
+    (is (= ["/birds/hoatzin.txt"] (:save-dialogs @s)))
+    (t/send! s {:type :save-chosen :path "/birds/copy.txt"})
+    (is (= {"/birds/copy.txt" "one"} (:files @s)))
+    (is (= "/birds/copy.txt" (:path (t/app s))) "the copy is the file now")))
+
+(deftest a-failed-write-says-why
+  (with-session [s]
+    (t/send! s {:type :opened :path "/birds/hoatzin.txt" :text "one"})
+    (t/type! s "zero ")
+    (swap! s assoc :write-error "Permission denied")
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "write")
+    (is (= "Can't write hoatzin.txt: Permission denied" (:message (t/app s))))
+    (is (:modified? (t/app s)) "the text still differs from the file")
+    (t/send! s {:type :save-chosen :error "no dialogs here"})
+    (is (= "Can't save: no dialogs here" (:message (t/app s))))))
+
+(deftest modified-tracks-the-file
+  (with-session [s]
+    (is (not (:modified? (t/app s))) "an empty buffer is no change")
+    (t/type! s "x")
+    (is (:modified? (t/app s)))
+    (t/press! s sdl/K-BACKSPACE)
+    (is (not (:modified? (t/app s))) "undoing the change by hand undoes it")
+    (t/send! s {:type :opened :path "/birds/hoatzin.txt" :text "one\ntwo\n"})
+    (is (not (:modified? (t/app s))) "a file just opened")
+    (t/type! s "a")
+    (is (:modified? (t/app s)))
+    (t/press! s sdl/K-BACKSPACE)
+    (is (not (:modified? (t/app s))))
+    (t/press! s sdl/K-RETURN)
+    (is (:modified? (t/app s)) "a new line")
+    (t/press! s sdl/K-BACKSPACE)
+    (is (not (:modified? (t/app s))) "rejoined")))
+
+(deftest modified-shows-and-redraws
+  (with-session [s]
+    (t/render! s)
+    (t/type! s "x")
+    (is (app/needs-draw? (t/app s) (:now @s)))
+    (t/render! s)
+    (t/press! s sdl/K-ESCAPE)
+    (t/render! s)
+    (t/command! s "save")
+    (t/render! s)
+    (t/send! s {:type :save-chosen :path "/birds/x.txt"})
+    (is (app/needs-draw? (t/app s) (:now @s)) "saving clears [+]")))

@@ -152,18 +152,27 @@
   "A headless editor, `width` x `height` points at `density`, starting in
   `mode`: :insert unless given, so tests can type straight away, and nil
   for the editor's own default. A mutable
-  map in an atom: {:app :canvas :now :clipboard :dialogs}; the editor reads
-  and writes :clipboard, and counts the open dialogs it shows in :dialogs.
+  map in an atom: {:app :canvas :now :clipboard :dialogs :save-dialogs
+  :files :write-error}; the editor reads and writes :clipboard, counts the
+  open dialogs it shows in :dialogs, records the paths the save dialogs it
+  shows start at in :save-dialogs, and writes into :files, a map of path
+  to text, unless there is a :write-error to fail with.
   Close with `close!`."
   [& {:keys [width height density clipboard mode]
       :or   {width 400 height 300 density 2.0 clipboard "" mode :insert}}]
   (let [c (canvas (long (* width density)) (long (* height density)))
-        s (atom {:canvas c :now 0 :clipboard clipboard :density density :dialogs 0})]
+        s (atom {:canvas c :now 0 :clipboard clipboard :density density :dialogs 0
+                 :save-dialogs [] :files {}})]
     (swap! s assoc :app (app/create (cond-> {:renderer     (:renderer c)
                                              :density-fn   (constantly (double density))
                                              :clipboard-fn #(:clipboard @s)
                                              :set-clipboard-fn #(swap! s assoc :clipboard %)
                                              :open-dialog-fn #(swap! s update :dialogs inc)
+                                             :save-dialog-fn #(swap! s update :save-dialogs conj %)
+                                             :write-file-fn
+                                             (fn [path text]
+                                               (or (:write-error @s)
+                                                   (do (swap! s assoc-in [:files path] text) nil)))
                                              :now          0}
                                       mode (assoc :mode mode))))
     s))
