@@ -132,3 +132,16 @@
     (t/matches-golden? "block-caret" (t/render! s))
     (t/press! s sdl/K-END)
     (t/matches-golden? "block-caret-at-a-line-end" (t/render! s))))
+
+(deftest ^:integration command-line
+  (with-session [s]
+    (t/type! s hoatzin-text)
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s ":open")
+    (t/matches-golden? "command-line" (t/render! s))))
+
+(deftest ^:integration opened-file
+  (with-session [s :mode nil]
+    (t/send! s {:type :opened :path "/birds/hoatzin.txt"
+                :text (str hoatzin-text "\n\nIt eats leaves.\n")})
+    (t/matches-golden? "opened-file" (t/render! s))))

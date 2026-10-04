@@ -2,14 +2,18 @@
   "The editor as a state machine: plain-data events in, a new app out, and
   drawing the app with any SDL renderer.
 
-  Nothing here reads the OS event queue, the clock or the clipboard: the host
-  passes time into `handle`/`draw!` and supplies :density-fn, :clipboard-fn
-  (read the clipboard) and :set-clipboard-fn (write it).
+  Nothing here reads the OS event queue, the clock, the clipboard or files:
+  the host passes time into `handle`/`draw!` and supplies :density-fn,
+  :clipboard-fn (read the clipboard), :set-clipboard-fn (write it) and
+  :open-dialog-fn (show a file dialog, whose file comes back as :opened).
   That is what lets tests drive the editor headlessly and deterministically.
 
   The editor is modal. In :normal mode the text is left alone: keys move the
   caret and select, `i` enters :insert mode, and the caret is a block. In
   :insert mode typing edits the text, and escape goes back to :normal.
+  `:` starts a command line (:command mode) in the status bar; return runs
+  it, escape abandons it. Commands:
+    :open                           choose a file and load it
 
   Events:
     {:type :text  :text s}          committed text input; in normal mode, a
@@ -30,6 +34,9 @@
     {:type :wheel :dy lines}        scroll; positive is towards the top
     {:type :tick}                   nothing happened for `ms-until-wake`
     {:type :focus :focused? bool}
+    {:type :opened :path p :text s} the file chosen in the open dialog, or
+    {:type :opened :path p :error e} why it could not be read (and :path
+                                    may be missing, if the dialog failed)
     {:type :expose}                 the window needs repainting
     {:type :quit}"
   (:require [clojure.string :as str]
@@ -65,12 +72,20 @@
 
 (def mode-labels {:normal "NORMAL" :insert "INSERT"})
 
+(defn- normalize-newlines [s]
+  (-> s (str/replace "\r\n" "\n") (str/replace "\r" "\n")))
+
 ;; The app is a map:
 ;;   :renderer :density-fn :clipboard-fn   supplied by the host
-;;   :mode                                 :normal or :insert
+;;   :mode                                 :normal, :insert or :command
+;;   :command                              the command line's text, after `:`
+;;   :message                              shown in the status bar until the
+;;                                         next keystroke
+;;   :path                                 the file loaded, if any
 ;;   :density :font                        the font, at the current density
 ;;   :status                               the status bar's {:font :metrics
-;;                                         :labels}, :labels typeset per mode
+;;                                         :lines}, :lines an atom caching
+;;                                         its text, typeset
 ;;   :status-textures                      its label texture cache
 ;;   :ctx :layout :laid-out                layout context, layout, its text
 ;;   :textures :scratch                    line texture cache, FFI scratch
@@ -119,12 +134,33 @@
   (layout/caret layout (view-caret app) (and upstream? (nil? composition))))
 
 (defn- status-view
-  "The status bar's font, its metrics and each mode's label, typeset."
+  "The status bar's font, its metrics and a cache for its typeset text."
   [app]
   (let [font (ct/font (:family app) (* (:status-font-size app) (:density app)))]
-    {:font    font
-     :metrics (layout/metrics font)
-     :labels  (update-vals mode-labels #(ct/typeset font % 1.0e9))}))
+    {:font font :metrics (layout/metrics font) :lines (atom {})}))
+
+(defn- release-status-lines! [lines]
+  (run! ct/release-paragraph (vals @lines))
+  (reset! lines {}))
+
+(defn- status-text
+  "What the status bar says: the command line, a message, or the mode."
+  [{:keys [mode command message]}]
+  (cond (= mode :command) (str ":" command)
+        message           message
+        :else             (mode-labels mode)))
+
+(defn- status-line
+  "The status bar's text, typeset. Only the latest text is kept: it changes
+  with every keystroke on the command line."
+  [{:keys [status] :as app}]
+  (let [text  (status-text app)
+        lines (:lines status)]
+    (or (get @lines text)
+        (let [p (ct/typeset (:font status) text 1.0e9)]
+          (release-status-lines! lines)
+          (swap! lines assoc text p)
+          p))))
 
 (defn- release-view! [{:keys [ctx textures font status status-textures]}]
   (some-> ctx layout/release-context)
@@ -132,7 +168,7 @@
   (some-> font ct/release-font)
   (some-> status-textures textures/clear!)
   (when status
-    (run! ct/release-paragraph (vals (:labels status)))
+    (release-status-lines! (:lines status))
     (ct/release-font (:font status))))
 
 (defn sync-view
@@ -236,14 +272,15 @@
 
 (defn create
   "A new, empty editor drawing with `:renderer`. Options (all but :renderer
-  optional): :density-fn, :clipboard-fn, :now, :mode (:normal unless
-  given), and any key of `defaults`.
+  optional): :density-fn, :clipboard-fn, :set-clipboard-fn, :open-dialog-fn,
+  :now, :mode (:normal unless given), and any key of `defaults`.
   Release it with `destroy!`."
   [{:keys [now] :or {now 0} :as opts}]
   (settle (merge defaults
                  {:density-fn   (constantly 1.0)
                   :clipboard-fn (constantly "")
                   :set-clipboard-fn (fn [_])
+                  :open-dialog-fn (fn [])
                   :textures     (textures/cache)
                   :status-textures (textures/cache)
                   :scratch      {:frect (ffi/alloc sdl/frect) :irect (ffi/alloc sdl/rect)}
@@ -363,9 +400,7 @@
                         (do (copy! app) (edit app now ed/delete (first sel) (second sel)))
                         app)
       sdl/K-V         (if cmd?
-                        (let [s (-> ((:clipboard-fn app))
-                                    (str/replace "\r\n" "\n")
-                                    (str/replace "\r" "\n"))]
+                        (let [s (normalize-newlines ((:clipboard-fn app)))]
                           (if (seq s) (edit app now ed/insert s) app))
                         app)
       app)))
@@ -475,20 +510,72 @@
                  {:text text :cursor (if (and cursor (<= 0 cursor n)) cursor n)})))
       (touched now)))
 
+(defn- leave-command [app now]
+  (-> app (enter-mode now :normal) (dissoc :command)))
+
+(defn- run-command
+  "Run the command line, back in normal mode."
+  [app now]
+  (let [command (str/trim (:command app))
+        app     (leave-command app now)]
+    (case command
+      ""     app
+      "open" (do ((:open-dialog-fn app)) app)
+      (assoc app :message (str "Not an editor command: " command)))))
+
+(defn- on-command-key
+  "A key on the command line. Other keys leave the document alone."
+  [app now key]
+  (let [command (:command app)]
+    (condp = key
+      sdl/K-ESCAPE    (leave-command app now)
+      sdl/K-RETURN    (run-command app now)
+      sdl/K-KP-ENTER  (run-command app now)
+      ;; Backspacing past the `:` leaves the command line.
+      sdl/K-BACKSPACE (if (empty? command)
+                        (leave-command app now)
+                        (-> app (assoc :command (subs command 0 (dec (count command))))
+                            (assoc :dirty? true :blink-from now)))
+      app)))
+
 (defn- on-text
-  "Typed text: inserted in insert mode, a command in normal mode."
+  "Typed text: inserted in insert mode, onto the command line in command
+  mode, and a command in normal mode."
   [app now text]
-  ;; Commands are read from text, not keys: the `i` key is followed by its
-  ;; text, which would otherwise be typed into the insert mode it began.
-  (cond (insert? app) (edit (dissoc app :composition) now ed/insert text)
-        (= text "i")  (enter-mode app now :insert)
-        :else         app))
+  ;; Normal mode reads its commands from text, not keys: the `i` key is
+  ;; followed by its text, which would otherwise be typed into the insert
+  ;; mode it began.
+  (case (:mode app)
+    :insert  (edit (dissoc app :composition) now ed/insert text)
+    :command (-> app (update :command str text) (assoc :dirty? true :blink-from now))
+    (case text
+      "i" (enter-mode app now :insert)
+      ":" (-> app (enter-mode now :command) (assoc :command ""))
+      app)))
+
+(defn- load-file
+  "The file chosen to open: loaded with the caret at its start, or why not."
+  [app now {:keys [path text error]}]
+  (let [file (some-> path (str/split #"/") peek)]
+    (if error
+      (assoc app :message (str "Can't open " (or file "a file") ": " error) :dirty? true)
+      (let [text (normalize-newlines text)]
+        (-> app
+            (assoc :doc (assoc ed/empty-doc :text text)
+                   :path path :scroll 0 :goal-x nil :upstream? false
+                   :message (str "\"" file "\" " (count (str/split-lines text)) " lines"))
+            (dissoc :composition :dragging? :drag-word :drag-point)
+            (touched now))))))
 
 (defn handle
   "The app after `event` (see the ns doc) at time `now` (ms)."
   [app event now]
   (let [app (sync-view app)                 ; navigation needs a fresh layout
-        composing? (some? (:composition app))]
+        composing? (some? (:composition app))
+        ;; a message lasts until the next keystroke
+        app (if (and (:message app) (#{:key :text} (:type event)))
+              (-> app (dissoc :message) (assoc :dirty? true))
+              app)]
     (case (:type event)
       :quit   (assoc app :quit? true)
       :text   (on-text app now (:text event))
@@ -496,7 +583,9 @@
       :composition (if (insert? app) (compose app now (:text event) (:cursor event)) app)
       ;; While composing, keys and clicks belong to the input method, and the
       ;; layout shows the composition, so its positions aren't the document's.
-      :key    (if composing? app (on-key app now (:key event) (:mod event 0)))
+      :key    (cond composing? app
+                    (= :command (:mode app)) (on-command-key app now (:key event))
+                    :else (on-key app now (:key event) (:mod event 0)))
       ;; The scroll bar leaves the document alone, so it works while composing.
       :click  (cond (on-scrollbar? app (:x event)) (on-scrollbar-click app (:y event))
                     composing? app
@@ -512,6 +601,7 @@
       :tick   (autoscroll app now)
       :wheel  (on-wheel app (:dy event))
       :focus  (assoc app :focused? (:focused? event) :blink-from now :dirty? true)
+      :opened (load-file app now event)
       :expose (assoc app :dirty? true)
       app)))
 
@@ -529,9 +619,10 @@
       [(min x x1) (max x x1)]
       [x (+ x (px app (/ (:font-size app) 2)))])))
 
-(defn caret-rect
-  "The caret's [x y w h] in render pixels: a bar in insert mode, a block in
-  normal mode."
+(defn- command? [app] (= :command (:mode app)))
+
+(defn- text-caret-rect
+  "A bar in insert mode, a block in normal mode."
   [app]
   (let [{:keys [layout scroll]} app
         {:keys [line-height caret-top caret-height]} (:metrics layout)
@@ -544,6 +635,23 @@
             x0 (long (Math/floor x0))]
         [(+ m x0) y (max 1 (- (long (Math/ceil x1)) x0)) caret-height]))))
 
+(defn- command-caret-rect
+  "A bar at the end of the command line."
+  [{:keys [status] :as app}]
+  (let [{:keys [caret-top caret-height]} (:metrics status)
+        {:keys [lines length]} (status-line app)
+        x (ct/offset-for-index (:line (first lines)) length)]
+    [(+ (px app (:margin app)) (long (Math/floor x)))
+     (+ (text-height app) (px app (:status-padding app)) caret-top)
+     (max 1 (px app 1))
+     caret-height]))
+
+(defn caret-rect
+  "The caret's [x y w h] in render pixels. While there is a command line,
+  the caret is there, not in the text."
+  [app]
+  (if (command? app) (command-caret-rect app) (text-caret-rect app)))
+
 (defn- caret-in-view? [app]
   (let [[_ y _ h] (caret-rect app)
         m (px app (:margin app))]
@@ -551,9 +659,12 @@
 
 (defn- caret-blinking?
   "The caret shows while focused and nothing is selected; a selection
-  replaces it. Scrolled out of view, it has nothing to blink."
+  replaces it. Scrolled out of view, it has nothing to blink. On the
+  command line, it always shows."
   [app]
-  (and (:focused? app) (nil? (ed/selection (:doc app))) (caret-in-view? app)))
+  (and (:focused? app)
+       (or (command? app)
+           (and (nil? (ed/selection (:doc app))) (caret-in-view? app)))))
 
 (defn caret-visible? [app now]
   (and (caret-blinking? app) (even? (quot (- now (:blink-from app)) (:blink-ms app)))))
@@ -625,25 +736,32 @@
                                             width height))
         (sdl/set-texture-color-mod texture 255 255 255)))))
 
+(defn- draw-bar-caret! [{:keys [renderer scratch] :as app}]
+  (let [[x y w h] (caret-rect app)
+        [r g b] (:foreground app)]
+    (sdl/set-render-draw-color renderer r g b 255)
+    (sdl/render-fill-rect renderer (sdl/set-frect! (:frect scratch) x y w h))))
+
 (defn- draw-status-bar!
-  "The bar along the bottom, naming the mode."
+  "The bar along the bottom: the mode, a message or the command line."
   [app]
   (let [{:keys [renderer scratch status status-textures]} app
         frect (:frect scratch)
         [w] (:size app)
         top (text-height app)
         [r g b] (:status-background app)
-        text (mode-labels (:mode app))
-        {:keys [line]} (first (:lines (get-in status [:labels (:mode app)])))
+        {:keys [line]} (first (:lines (status-line app)))
         {:keys [texture width height pad] base :baseline}
-        (textures/fetch! status-textures renderer text line (:status-foreground app))]
+        (textures/fetch! status-textures renderer (status-text app) line
+                         (:status-foreground app))]
     (sdl/set-render-draw-color renderer r g b 255)
     (sdl/render-fill-rect renderer (sdl/set-frect! frect 0 top w (status-height app)))
     (sdl/render-texture renderer texture ffi/null
                         (sdl/set-frect! frect (- (px app (:margin app)) pad)
                                         (+ top (px app (:status-padding app))
                                            (get-in status [:metrics :baseline]) (- base))
-                                        width height))))
+                                        width height))
+    (textures/end-frame! status-textures)))
 
 (defn draw!
   "Render the app at time `now` (ms), present it, and return the app."
@@ -690,15 +808,13 @@
                                                 (+ m (- (* k line-height) scroll) baseline below)
                                                 (- (long (Math/ceil x1)) (long (Math/floor x0)))
                                                 thickness)))))
-    (when caret?
-      (if (insert? app)
-        (let [[x y cw ch] (caret-rect app)]
-          (sdl/set-render-draw-color renderer fr fg fb 255)
-          (sdl/render-fill-rect renderer (sdl/set-frect! frect x y cw ch)))
-        (draw-block-caret! app)))
+    (when (and caret? (not (command? app)))
+      (if (insert? app) (draw-bar-caret! app) (draw-block-caret! app)))
     (sdl/set-render-clip-rect renderer ffi/null)
     (draw-scrollbar! app)
     (draw-status-bar! app)
+    (when (and caret? (command? app))
+      (draw-bar-caret! app))
     (sdl/render-present renderer)
     (textures/end-frame! textures)
     (assoc app :dirty? false :drawn-phase caret?)))

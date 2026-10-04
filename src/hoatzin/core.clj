@@ -4,12 +4,55 @@
             [hoatzin.app :as app]
             [hoatzin.sdl :as sdl]))
 
+;; ---------------------------------------------------------------- open dialog
+
+;; SDL calls back once the user has chosen (or cancelled), from inside its
+;; event loop, so from within a :blocking SDL_WaitEventTimeout or from
+;; another thread: hence :collect-safe. The callback only records the choice
+;; and wakes the event loop with a user event; `decode` reads the file.
+
+(defn- open-dialog
+  "{:show! f :take! g}: `show!` opens the dialog unless it is already open,
+  and `take!` answers the choice it reported, once, as {:path p} or
+  {:error e}, or nil."
+  [window]
+  (let [state (atom {:open? false})
+        done  (fn [_ filelist _]
+                (let [choice (cond (ffi/null? filelist) {:error (sdl/get-error)}
+                                   (ffi/null? (ffi/read filelist :pointer)) nil
+                                   :else {:path (ffi/ptr->string (ffi/read filelist :pointer))})]
+                  (reset! state {:open? false :choice choice})
+                  (ffi/with-alloc [ev sdl/EVENT-SIZE]
+                    (ffi/write ev :uint sdl/EVENT-USER sdl/O-event-type)
+                    (sdl/push-event ev))))
+        cb (ffi/callback (ffi/global-arena) done [:pointer :pointer :int] :void :collect-safe)]
+    {:show! (fn []
+              (when-not (:open? @state)
+                (swap! state assoc :open? true)
+                (sdl/show-open-file-dialog cb ffi/null window ffi/null 0 ffi/null false)))
+     :take! (fn []
+              (let [{:keys [choice]} @state]
+                (swap! state dissoc :choice)
+                choice))}))
+
+(defn- read-choice
+  "The :opened event for a file chosen in the open dialog."
+  [{:keys [path error]}]
+  (if error
+    {:type :opened :error error}
+    (try {:type :opened :path path :text (slurp path)}
+         (catch Exception e {:type :opened :path path :error (ex-message e)}))))
+
+;; ---------------------------------------------------------------- events
+
 (defn- decode
-  "The SDL event in `ev` as a hoatzin.app event, or nil to ignore it."
-  [renderer ev]
+  "The SDL event in `ev` as a hoatzin.app event, or nil to ignore it.
+  `dialog` is the open dialog, from `open-dialog`."
+  [renderer dialog ev]
   (let [type (ffi/read ev :uint sdl/O-event-type)]
     (condp = type
       sdl/EVENT-QUIT       {:type :quit}
+      sdl/EVENT-USER       (some-> ((:take! dialog)) read-choice)
       sdl/EVENT-TEXT-INPUT {:type :text
                             :text (ffi/ptr->string (ffi/read ev :pointer sdl/O-text-text))}
       sdl/EVENT-TEXT-EDITING
@@ -58,10 +101,10 @@
 (defn- run-loop
   "Run until quit. `latest` always holds the current app, for cleanup.
   `cursors` maps hoatzin.app/pointer's answers to SDL cursors."
-  [window latest ev irect cursors]
+  [window latest dialog ev irect cursors]
   (let [renderer (:renderer @latest)
         step (fn [app]
-               (if-let [e (decode renderer ev)]
+               (if-let [e (decode renderer dialog ev)]
                  (app/handle app e (sdl/get-ticks))
                  app))]
     (loop [app @latest, shown-pointer nil]
@@ -99,16 +142,18 @@
               [(ffi/read pwin :pointer) (ffi/read pren :pointer)]))
           cursors {:text  (sdl/create-system-cursor sdl/SYSTEM-CURSOR-TEXT)
                    :arrow (sdl/create-system-cursor sdl/SYSTEM-CURSOR-DEFAULT)}
-          latest (atom nil)]
+          latest (atom nil)
+          dialog (open-dialog window)]
       (sdl/check! (sdl/start-text-input window) "SDL_StartTextInput")
       (try
         (reset! latest (app/create {:renderer     renderer
                                     :density-fn   #(sdl/get-window-pixel-density window)
                                     :clipboard-fn sdl/clipboard-text
                                     :set-clipboard-fn #(sdl/set-clipboard-text %)
+                                    :open-dialog-fn (:show! dialog)
                                     :now          (sdl/get-ticks)}))
         (with-open [a (ffi/confined-arena)]
-          (run-loop window latest (ffi/alloc a sdl/EVENT-SIZE) (ffi/alloc a sdl/rect) cursors))
+          (run-loop window latest dialog (ffi/alloc a sdl/EVENT-SIZE) (ffi/alloc a sdl/rect) cursors))
         (finally
           (some-> @latest app/destroy!)
           (run! sdl/destroy-cursor (vals cursors))

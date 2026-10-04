@@ -725,3 +725,70 @@
     (t/render! s)
     (t/press! s sdl/K-ESCAPE)
     (is (app/needs-draw? (t/app s) 0))))
+
+;; ---------------------------------------------------------------- commands
+
+(deftest colon-starts-a-command-line
+  (with-session [s :mode :normal]
+    (t/type! s ":ope")
+    (is (= :command (:mode (t/app s))))
+    (is (= "ope" (:command (t/app s))))
+    (is (= "" (t/text s)) "the document is untouched")
+    (t/press! s sdl/K-BACKSPACE)
+    (is (= "op" (:command (t/app s))))
+    (t/press! s sdl/K-LEFT)
+    (is (= "op" (:command (t/app s))) "other keys do nothing")
+    (t/press! s sdl/K-ESCAPE)
+    (is (= :normal (:mode (t/app s))) "escape abandons it")
+    (is (nil? (:command (t/app s))))
+    (t/type! s ":")
+    (t/press! s sdl/K-BACKSPACE)
+    (is (= :normal (:mode (t/app s))) "as does backspacing past the colon")
+    (is (zero? (:dialogs @s)) "and nothing ran")))
+
+(deftest colon-is-typed-in-insert-mode
+  (with-session [s]
+    (t/type! s ":open")
+    (is (= ":open" (t/text s)))))
+
+(deftest open-shows-the-dialog
+  (with-session [s :mode :normal]
+    (t/command! s "open")
+    (is (= 1 (:dialogs @s)))
+    (is (= :normal (:mode (t/app s))))
+    (t/command! s "  open ")
+    (is (= 2 (:dialogs @s)) "surrounding spaces are ignored")))
+
+(deftest an-unknown-command-says-so
+  (with-session [s :mode :normal]
+    (t/command! s "frobnicate")
+    (is (= "Not an editor command: frobnicate" (:message (t/app s))))
+    (t/press! s sdl/K-LEFT)
+    (is (nil? (:message (t/app s))) "until the next keystroke")
+    (t/command! s "")
+    (is (nil? (:message (t/app s))) "an empty command does nothing")))
+
+(deftest the-opened-file-replaces-the-buffer
+  (with-session [s]
+    (t/type! s "scratch")
+    (t/send! s {:type :opened :path "/birds/hoatzin.txt" :text "one\r\ntwo\rthree\n"})
+    (is (= {:text "one\ntwo\nthree\n" :caret 0} (t/doc s)) "with line endings normalized")
+    (is (= "/birds/hoatzin.txt" (:path (t/app s))))
+    (is (= "\"hoatzin.txt\" 3 lines" (:message (t/app s))))
+    (is (zero? (:scroll (t/app s))))))
+
+(deftest a-file-that-cannot-be-read-leaves-the-buffer-alone
+  (with-session [s]
+    (t/type! s "keep me")
+    (t/send! s {:type :opened :path "/birds/secret.txt" :error "Permission denied"})
+    (is (= "keep me" (t/text s)))
+    (is (= "Can't open secret.txt: Permission denied" (:message (t/app s))))))
+
+(deftest the-caret-is-on-the-command-line
+  (with-session [s :mode :normal]
+    (let [in-text (app/caret-rect (t/app s))]
+      (t/type! s ":open")
+      (let [[x y] (app/caret-rect (t/app s))]
+        (is (> y (second in-text)) "below the text, in the status bar")
+        (is (> x (first in-text)) "after the command")
+        (is (app/caret-visible? (t/app s) (:now @s)))))))

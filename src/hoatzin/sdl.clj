@@ -22,6 +22,7 @@
 (def EVENT-MOUSE-BUTTON-DOWN     0x401)
 (def EVENT-MOUSE-BUTTON-UP       0x402)
 (def EVENT-MOUSE-WHEEL           0x403)
+(def EVENT-USER                  0x8000)
 
 ;; Keycodes and modifiers
 (def K-RETURN    0x0d)
@@ -84,6 +85,7 @@
 (ffi/defcfn get-ticks   "SDL_GetTicks"    [] :uint64)
 (ffi/defcfn sdl-free    "SDL_free"        [:pointer] :void)
 (ffi/defcfn poll-event  "SDL_PollEvent"   [:pointer] :bool)
+(ffi/defcfn push-event  "SDL_PushEvent"   [:pointer] :bool)
 (ffi/defcfn wait-event-timeout "SDL_WaitEventTimeout" [:pointer :int] :bool :blocking)
 (ffi/defcfn convert-event-to-render-coordinates "SDL_ConvertEventToRenderCoordinates"
   [:pointer :pointer] :bool)
@@ -101,6 +103,11 @@
 (ffi/defcfn get-mod-state       "SDL_GetModState"      [] :uint16)
 (ffi/defcfn get-clipboard-text* "SDL_GetClipboardText" [] :pointer)
 (ffi/defcfn set-clipboard-text  "SDL_SetClipboardText" [:string] :bool)
+
+;; The callback is void (*)(void *userdata, const char *const *filelist, int filter):
+;; filelist is NULL on error, and empty (its first entry NULL) when cancelled.
+(ffi/defcfn show-open-file-dialog "SDL_ShowOpenFileDialog"
+  [:pointer :pointer :pointer :pointer :int :pointer :bool] :void :blocking)
 
 (ffi/defcfn create-system-cursor "SDL_CreateSystemCursor" [:int] :pointer)
 (ffi/defcfn set-cursor           "SDL_SetCursor"          [:pointer] :bool)
