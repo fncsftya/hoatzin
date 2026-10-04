@@ -13,6 +13,12 @@
   "Off-screen textures kept, most recently drawn first, for scrolling back."
   256)
 
+(def ^:private slack
+  "How many more than `spare` may build up before eviction, so that its sort
+  and frees come in occasional batches rather than on every frame of a
+  scroll."
+  64)
+
 (defn cache [] (atom {:frame 0 :entries {}}))
 
 (defn- upload [renderer line color]
@@ -37,10 +43,11 @@
     e))
 
 (defn end-frame!
-  "Evict all but this frame's textures and the `spare` most recent others."
+  "Once there are `slack` too many, evict all but this frame's textures and
+  the `spare` most recent others."
   [cache]
   (let [{:keys [frame entries]} @cache]
-    (when (> (count entries) spare)
+    (when (> (count entries) (+ spare slack))
       (let [stale (->> entries
                        (remove (fn [[_ e]] (= frame (:used e))))
                        (sort-by (fn [[_ e]] (- (:used e))))

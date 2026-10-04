@@ -45,6 +45,7 @@
             [hoatzin.editor :as ed]
             [hoatzin.layout :as layout]
             [hoatzin.sdl :as sdl]
+            [hoatzin.text :as text]
             [hoatzin.textures :as textures]))
 
 (def defaults
@@ -73,7 +74,10 @@
 (def mode-labels {:normal "NORMAL" :insert "INSERT"})
 
 (defn- normalize-newlines [s]
-  (-> s (str/replace "\r\n" "\n") (str/replace "\r" "\n")))
+  ;; most text has no \r: find that out with a scan that copies nothing
+  (if (str/includes? s "\r")
+    (-> s (str/replace "\r\n" "\n") (str/replace "\r" "\n"))
+    s))
 
 ;; The app is a map:
 ;;   :renderer :density-fn :clipboard-fn   supplied by the host
@@ -85,11 +89,12 @@
 ;;   :density :font                        the font, at the current density
 ;;   :status                               the status bar's {:font :metrics
 ;;                                         :lines}, :lines an atom caching
-;;                                         its text, typeset
+;;                                         its text, set as a line
 ;;   :status-textures                      its label texture cache
 ;;   :ctx :layout :laid-out                layout context, layout, its text
 ;;   :textures :scratch                    line texture cache, FFI scratch
-;;   :doc :goal-x                          the document; column for up/down
+;;   :doc :goal-x                          the document (see hoatzin.editor);
+;;                                         column for up/down
 ;;   :upstream?                            the caret, at a wrap point, is drawn
 ;;                                         at the end of the line above
 ;;   :dragging? :drag-word :drag-point     a click is extending the selection
@@ -114,13 +119,22 @@
   [{:keys [doc composition]}]
   (if composition
     (let [{:keys [text caret]} doc]
-      (str (subs text 0 caret) (:text composition) (subs text caret)))
+      (text/insert text caret (:text composition)))
     (:text doc)))
 
 (defn- display-key
-  "What the display text is a function of; cheap to compare."
+  "What the display text is a function of: see `same-display?`."
   [{:keys [doc composition]}]
   (if composition [(:text doc) (:caret doc) (:text composition)] (:text doc)))
+
+(defn- same-display?
+  "Whether display keys `a` and `b` show the same text. The document's text
+  compares by identity: every edit makes a new one, and comparing contents
+  could walk the whole document."
+  [a b]
+  (if (vector? a)
+    (and (vector? b) (identical? (a 0) (b 0)) (= (subvec a 1) (subvec b 1)))
+    (identical? a b)))
 
 (defn- view-caret
   "Where the caret is drawn: inside the composition while composing."
@@ -134,13 +148,13 @@
   (layout/caret layout (view-caret app) (and upstream? (nil? composition))))
 
 (defn- status-view
-  "The status bar's font, its metrics and a cache for its typeset text."
+  "The status bar's font, its metrics and a cache for its text, set."
   [app]
   (let [font (ct/font (:family app) (* (:status-font-size app) (:density app)))]
     {:font font :metrics (layout/metrics font) :lines (atom {})}))
 
 (defn- release-status-lines! [lines]
-  (run! ct/release-paragraph (vals @lines))
+  (run! #(ct/release (:line %)) (vals @lines))
   (reset! lines {}))
 
 (defn- status-text
@@ -151,16 +165,18 @@
         :else             (mode-labels mode)))
 
 (defn- status-line
-  "The status bar's text, typeset. Only the latest text is kept: it changes
-  with every keystroke on the command line."
+  "The status bar's text set as a line, as hoatzin.coretext's line functions
+  take it, with its UTF-16 :length. Only the latest text is kept: it
+  changes with every keystroke on the command line."
   [{:keys [status] :as app}]
   (let [text  (status-text app)
         lines (:lines status)]
     (or (get @lines text)
-        (let [p (ct/typeset (:font status) text 1.0e9)]
+        (let [ln {:line (ct/make-line (:font status) text) :base 0
+                  :length (ct/utf16-length text)}]
           (release-status-lines! lines)
-          (swap! lines assoc text p)
-          p))))
+          (swap! lines assoc text ln)
+          ln))))
 
 (defn- release-view! [{:keys [ctx textures font status status-textures]}]
   (some-> ctx layout/release-context)
@@ -174,7 +190,7 @@
 (defn sync-view
   "Bring font, layout context and layout up to date with the renderer's
   output and the text. Each step is a cheap comparison unless its inputs
-  changed."
+  changed. Between frames, as this is, it also trims the layout's cache."
   [app]
   (let [density (double ((:density-fn app)))
         app (if (= density (:density app))
@@ -193,7 +209,8 @@
                   (assoc app :ctx (layout/context (:font app) wrap) :layout nil :follow? true)))
         shown (display-key app)
         app (if (= size (:size app)) app (assoc app :size size :dirty? true))]
-    (if (and (:layout app) (= shown (:laid-out app)))
+    (layout/trim! (:ctx app))
+    (if (and (:layout app) (same-display? shown (:laid-out app)))
       app
       (assoc app :layout (layout/layout (:ctx app) (display-text app))
                  :laid-out shown :dirty? true))))
@@ -553,17 +570,24 @@
       ":" (-> app (enter-mode now :command) (assoc :command ""))
       app)))
 
+(defn- file-lines
+  "How many lines `t` has, as an editor counts them: a final newline ends
+  the last line rather than starting another."
+  [t]
+  (let [n (text/line-count t)]
+    (if (and (> n 1) (= "" (text/line t (dec n)))) (dec n) n)))
+
 (defn- load-file
   "The file chosen to open: loaded with the caret at its start, or why not."
   [app now {:keys [path text error]}]
   (let [file (some-> path (str/split #"/") peek)]
     (if error
       (assoc app :message (str "Can't open " (or file "a file") ": " error) :dirty? true)
-      (let [text (normalize-newlines text)]
+      (let [t (text/of (normalize-newlines text))]
         (-> app
-            (assoc :doc (assoc ed/empty-doc :text text)
+            (assoc :doc (assoc ed/empty-doc :text t)
                    :path path :scroll 0 :goal-x nil :upstream? false
-                   :message (str "\"" file "\" " (count (str/split-lines text)) " lines"))
+                   :message (str "\"" file "\" " (file-lines t) " lines"))
             (dissoc :composition :dragging? :drag-word :drag-point)
             (touched now))))))
 
@@ -639,8 +663,8 @@
   "A bar at the end of the command line."
   [{:keys [status] :as app}]
   (let [{:keys [caret-top caret-height]} (:metrics status)
-        {:keys [lines length]} (status-line app)
-        x (ct/offset-for-index (:line (first lines)) length)]
+        {:keys [length] :as ln} (status-line app)
+        x (ct/offset-for-index ln length)]
     [(+ (px app (:margin app)) (long (Math/floor x)))
      (+ (text-height app) (px app (:status-padding app)) caret-top)
      (max 1 (px app 1))
@@ -750,7 +774,7 @@
         [w] (:size app)
         top (text-height app)
         [r g b] (:status-background app)
-        {:keys [line]} (first (:lines (status-line app)))
+        {:keys [line]} (status-line app)
         {:keys [texture width height pad] base :baseline}
         (textures/fetch! status-textures renderer (status-text app) line
                          (:status-foreground app))]

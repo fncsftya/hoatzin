@@ -1,15 +1,22 @@
 (ns hoatzin.layout
-  "Document layout: the text split into paragraphs, each wrapped by CoreText.
+  "Document layout: the text's lines as paragraphs, each wrapped by CoreText.
 
-  Positions are code-point indices into the document string, as Jolt
-  strings count them; CoreText's UTF-16 indices stay inside this namespace.
+  Positions are code-point indices into the document, as Jolt strings count
+  them; CoreText's UTF-16 indices stay inside this namespace.
 
-  Paragraphs are cached by their text within a layout context (one font and
-  wrap width), so an edit re-typesets only the paragraph it touched. Identical
-  paragraphs (blank lines, say) share one entry. A layout pass evicts the
-  paragraphs that no longer appear."
-  (:require [clojure.string :as str]
-            [hoatzin.coretext :as ct]))
+  The paragraphs are the items of a hoatzin.tree, summing each one's length
+  (with its newline) and its count of visual lines, so finding the paragraph
+  at a position or a visual line is O(log n). A layout context (one font and
+  wrap width) keeps the last layout it made, and the next one re-wraps only
+  the lines that changed since: see hoatzin.text/changed-lines.
+
+  A paragraph is plain data, {:text :length :u16 :lines}, its lines just
+  where it breaks. The CTLines that measure and draw lines are set only for
+  the lines asked about, mostly those on screen, and cached in the context
+  by their text until `trim!` finds them unused."
+  (:require [hoatzin.coretext :as ct]
+            [hoatzin.text :as text]
+            [hoatzin.tree :as tree]))
 
 ;; ---------------------------------------------------------------- metrics
 
@@ -49,74 +56,168 @@
 
 ;; ---------------------------------------------------------------- paragraphs
 
-(defn- paragraph [font width text]
-  (let [{:keys [string lines]} (ct/typeset font text width)
-        p {:text text :string string :u16 (u16-table text)}]
-    (assoc p :lines
-           (mapv (fn [{:keys [start end] :as ln}]
-                   (assoc ln :text (subs text (u16->cp p start) (u16->cp p end))))
-                 lines))))
+(defn- paragraphs-of
+  "Paragraphs for the strings `texts`, wrapped."
+  [font width texts]
+  (mapv (fn [text {:keys [length lines]}]
+          {:text text :length length :lines lines
+           ;; UTF-16 is longer than the code points only past the BMP
+           :u16 (when (not= length (count text)) (u16-table text))})
+        texts (ct/wrap font texts width)))
 
-(defn- split-paragraphs [text]
-  (loop [from 0, acc []]
-    (if-let [i (str/index-of text "\n" from)]
-      (recur (inc i) (conj acc (subs text from i)))
-      (conj acc (subs text from)))))
+(defn- edit-range
+  "Where string `b` differs from `a`: [p ea eb], a's [p, ea) having become
+  b's [p, eb)."
+  [^String a ^String b]
+  ;; .charAt on a hinted string is several times faster than nth
+  (let [na (.length a), nb (.length b), m (min na nb)
+        p (loop [k 0] (if (and (< k m) (= (.charAt a k) (.charAt b k))) (recur (inc k)) k))
+        s (loop [k 0]
+            (if (and (< k (- m p)) (= (.charAt a (- na 1 k)) (.charAt b (- nb 1 k))))
+              (recur (inc k))
+              k))]
+    [p (- na s) (- nb s)]))
+
+(defn- rewrap
+  "Paragraph `old` edited to `text`, re-breaking only the lines the edit
+  disturbs (see hoatzin.coretext/rewrap)."
+  [font width old text]
+  (let [[p ea eb] (edit-range (:text old) text)
+        u16 (when (or (:u16 old) (some astral? (subs text p eb))) (u16-table text))
+        new {:text text :u16 u16}
+        {:keys [length lines]}
+        (ct/rewrap font old text width (cp->u16 old p) (cp->u16 old ea) (cp->u16 new eb))]
+    (assoc new :length length :lines lines)))
+
+;; A paragraph's :len counts its newline; its :w is its visual lines.
+(def ^:private spec {:len #(inc (count (:text %))) :w #(count (:lines %))})
 
 (defn context
-  "A layout context: `font` (from hoatzin.coretext/font) wrapped to `width` px."
+  "A layout context: `font` (from hoatzin.coretext/font) wrapped to `width`
+  px. Release it with `release-context`."
   [font width]
-  {:font font :width width :metrics (metrics font) :cache (atom {})})
+  {:font font :width width :metrics (metrics font) :current (atom nil)
+   ;; CTLines by their text, each with the generation that last used it
+   :ctlines (atom {:gen 0 :entries {}})})
 
-(defn release-context [{:keys [cache]}]
-  (run! ct/release-paragraph (vals @cache))
-  (reset! cache {}))
+(def ^:private spare-lines
+  "CTLines kept past those in use, most recently used first."
+  1024)
+
+(def ^:private slack-lines
+  "How many more than `spare-lines` may build up before `trim!` evicts."
+  256)
+
+(defn trim!
+  "Release cached CTLines unused since the last trim, keeping the
+  `spare-lines` most recently used. Call it between frames: a CTLine that a
+  query hands out is good until the next trim."
+  [{:keys [ctlines]}]
+  (let [{:keys [gen entries]} @ctlines]
+    (when (> (count entries) (+ spare-lines slack-lines))
+      (let [stale (->> entries
+                       (remove (fn [[_ e]] (= gen (:used e))))
+                       (sort-by (fn [[_ e]] (- (:used e))))
+                       (drop spare-lines))]
+        (doseq [[_ e] stale] (ct/release (:line e)))
+        (swap! ctlines update :entries #(apply dissoc % (map key stale)))))
+    (swap! ctlines update :gen inc)))
+
+(defn release-context [{:keys [current ctlines]}]
+  (doseq [[_ e] (:entries @ctlines)] (ct/release (:line e)))
+  (reset! ctlines {:gen 0 :entries {}})
+  (reset! current nil))
 
 (defn layout
-  "Lay out `text` in `ctx`, reusing cached paragraphs.
+  "Lay out `txt` (a hoatzin.text, or a string) in `ctx`, re-wrapping only
+  the lines that differ from the context's last layout.
 
-  Returns {:paras [{:p :start :end :first-line}] :lines [[para line]] :metrics}."
-  [{:keys [font width metrics cache]} text]
-  (let [texts (split-paragraphs text)
-        old   @cache
-        new   (reduce (fn [m t]
-                        (if (contains? m t)
-                          m
-                          (assoc m t (or (get old t) (paragraph font width t)))))
-                      {} texts)]
-    (doseq [[t p] old :when (not (contains? new t))]
-      (ct/release-paragraph p))
-    (reset! cache new)
-    (loop [[t & more] texts, start 0, paras [], lines []]
-      (if (nil? t)
-        {:paras paras :lines lines :metrics metrics}
-        (let [p (get new t)
-              i (count paras)]
-          (recur more
-                 (+ start (count t) 1)
-                 (conj paras {:p p :start start :end (+ start (count t))
-                              :first-line (count lines)})
-                 (into lines (map (fn [j] [i j])) (range (count (:lines p))))))))))
+  Returns {:tree :text :metrics :font :ctlines}; the functions below answer
+  questions of it."
+  [{:keys [font width metrics current ctlines]} txt]
+  (let [txt  (text/of txt)
+        old  @current
+        fresh #(tree/build spec (paragraphs-of font width (text/lines txt)))
+        t    (if (nil? old)
+               (fresh)
+               (let [[i ja jb] (text/changed-lines (:text old) txt)
+                     t (:tree old)]
+                 (cond
+                   (= i ja jb) t
+                   ;; one line edited, as typing does: re-break just around the edit
+                   (= (inc i) ja jb)
+                   (tree/splice spec t i ja [(rewrap font width (tree/get-item spec t i)
+                                                     (text/line txt i))])
+                   ;; a new text altogether, as opening a file gives
+                   (and (zero? i) (= ja (tree/n t))) (fresh)
+                   :else
+                   (tree/splice spec t i ja (paragraphs-of font width (text/lines txt i jb))))))
+        L    {:tree t :text txt :metrics metrics :font font :ctlines ctlines}]
+    (reset! current L)
+    L))
 
 ;; ---------------------------------------------------------------- queries
 
-(defn line-count [L] (count (:lines L)))
+(defn line-count [L] (tree/w (:tree L)))
+(defn paragraphs
+  "Every paragraph, as {:text :length :u16 :lines}: for tests."
+  [L]
+  (tree/items spec (:tree L)))
 (defn line-height [L] (get-in L [:metrics :line-height]))
 
-(defn visual-line
-  "Visual line `k`: {:line ctline :text s}."
-  [L k]
-  (let [[i j] (nth (:lines L) k)]
-    (nth (get-in L [:paras i :p :lines]) j)))
+(defn- para
+  "The paragraph where the running sum of `dim` passes `x`, as
+  {:p :i :start :end :first-line}: by :len, the one holding document
+  position x; by :w, the one holding visual line x."
+  [L dim x]
+  (let [[p i start first-line] (tree/locate spec (:tree L) dim x)]
+    {:p p :i i :start start :end (+ start (count (:text p))) :first-line first-line}))
 
-(defn- para-index
-  "The paragraph holding document position `pos`."
-  [{:keys [paras]} pos]
-  (loop [lo 0, hi (dec (count paras))]
-    (if (>= lo hi)
-      lo
-      (let [mid (quot (+ lo hi 1) 2)]
-        (if (<= (:start (nth paras mid)) pos) (recur mid hi) (recur lo (dec mid)))))))
+(defn- para-at [L pos] (para L :len pos))
+(defn- para-of-line [L k] (para L :w k))
+
+(defn- line-ref
+  "Visual line `k` as [paragraph line-within-it]."
+  [L k]
+  (let [{:keys [first-line] :as pa} (para-of-line L k)]
+    [pa (- k first-line)]))
+
+(defn- line-text
+  "The text of line `ln` of paragraph `p`. It is cut from the paragraph's
+  when wanted, not kept: most paragraphs are one line, and keeping a copy
+  would double the memory a document takes."
+  [p {:keys [start end]}]
+  (let [text (:text p)]
+    (if (and (zero? start) (= end (:length p)))
+      text
+      (subs text (u16->cp p start) (u16->cp p end)))))
+
+(defn- ctline
+  "The CTLine of line text `s`, from the cache or set now; nil for \"\"."
+  [{:keys [font ctlines]} s]
+  (when (seq s)
+    (let [{:keys [gen entries]} @ctlines]
+      (if-let [e (get entries s)]
+        (do (when-not (= gen (:used e)) (swap! ctlines assoc-in [:entries s :used] gen))
+            (:line e))
+        (let [line (ct/make-line font s)]
+          (swap! ctlines assoc-in [:entries s] {:line line :used gen})
+          line)))))
+
+(defn- set-line
+  "Line `j` of paragraph `p`, ready to measure: {:start :end :text, :line
+  its CTLine and :base its start, as hoatzin.coretext's line functions take
+  it}. Good until the next `trim!`."
+  [L p j]
+  (let [{:keys [start] :as ln} (nth (:lines p) j)
+        s (line-text p ln)]
+    (assoc ln :text s :line (ctline L s) :base start)))
+
+(defn visual-line
+  "Visual line `k`: {:line ctline :text s}, good until the next `trim!`."
+  [L k]
+  (let [[{:keys [p]} j] (line-ref L k)]
+    (set-line L p j)))
 
 (defn- line-index
   "The line of paragraph `p` holding UTF-16 index `u`: the last one starting
@@ -135,19 +236,17 @@
   `wrap-end?`."
   ([L pos] (caret L pos false))
   ([L pos upstream?]
-   (let [i (para-index L pos)
-         {:keys [p start first-line]} (nth (:paras L) i)
+   (let [{:keys [p start first-line]} (para-at L pos)
          u (cp->u16 p (- pos start))
          j (line-index p u)
          j (if (and upstream? (pos? j) (= u (:start (nth (:lines p) j)))) (dec j) j)]
-     [(ct/offset-for-index (:line (nth (:lines p) j)) u) (+ first-line j)])))
+     [(ct/offset-for-index (set-line L p j) u) (+ first-line j)])))
 
 (defn wrap-end?
   "Whether `pos` is the end of visual line `k` where its paragraph wraps
   onto the next line: a caret placed there for line `k` belongs upstream."
   [L k pos]
-  (let [[i j] (nth (:lines L) k)
-        {:keys [p start]} (nth (:paras L) i)
+  (let [[{:keys [p start]} j] (line-ref L k)
         lines (:lines p)]
     (and (< j (dec (count lines)))
          (= pos (+ start (u16->cp p (:end (nth lines j))))))))
@@ -156,44 +255,37 @@
   "The document position nearest pixel offset `x` on visual line `k`. Past
   the end of a wrapped line that is the wrap point (see `wrap-end?`)."
   [L k x]
-  (let [[i j] (nth (:lines L) k)
-        {:keys [p start]} (nth (:paras L) i)
-        {lo :start hi :end line :line} (nth (:lines p) j)
-        u (-> (or (ct/index-for-position line x) lo) (max lo) (min hi))]
+  (let [[{:keys [p start]} j] (line-ref L k)
+        {lo :start hi :end :as ln} (set-line L p j)
+        u (-> (or (ct/index-for-position ln x) lo) (max lo) (min hi))]
     (+ start (u16->cp p u))))
 
 (defn char-at
   "The document index of the character under pixel offset `x` on visual
   line `k`, or nil on an empty line."
   [L k x]
-  (let [[i j] (nth (:lines L) k)
-        {:keys [p start]} (nth (:paras L) i)
-        {lo :start hi :end line :line} (nth (:lines p) j)
+  (let [[{:keys [p start]} j] (line-ref L k)
+        {lo :start hi :end :as ln} (set-line L p j)
         pos (position-at L k x)
         u (cp->u16 p (- pos start))]
     (when (< lo hi)
       ;; position-at gives the nearest boundary; the character is the one
       ;; on the side of it that `x` falls.
-      (if (and (> u lo) (or (= u hi) (< x (ct/offset-for-index line u))))
+      (if (and (> u lo) (or (= u hi) (< x (ct/offset-for-index ln u))))
         (dec pos)
         pos))))
 
-(defn- para-of-line
-  "The index of the paragraph holding visual line `k`."
-  [{:keys [paras]} k]
-  (loop [lo 0, hi (dec (count paras))]
-    (if (>= lo hi)
-      lo
-      (let [mid (quot (+ lo hi 1) 2)]
-        (if (<= (:first-line (nth paras mid)) k) (recur mid hi) (recur lo (dec mid)))))))
-
 (defn- paras-on-lines
-  "The paragraphs with a visual line in [k0, k1)."
+  "The paragraphs with a visual line in [k0, k1), as `para` gives them."
   [L k0 k1]
   (let [k0 (max k0 0)
         k1 (min k1 (line-count L))]
     (if (< k0 k1)
-      (subvec (:paras L) (para-of-line L k0) (inc (para-of-line L (dec k1))))
+      (tree/fold spec (:tree L) (:i (para-of-line L k0)) (inc (:i (para-of-line L (dec k1))))
+                 (fn [acc p i start first-line]
+                   (conj acc {:p p :i i :start start :end (+ start (count (:text p)))
+                              :first-line first-line}))
+                 [])
       [])))
 
 (defn range-segments
@@ -207,11 +299,14 @@
          :when (and (< a end) (> b start))
          :let [ua (cp->u16 p (- (max a start) start))
                ub (cp->u16 p (- (min b end) start))]
-         [j {:keys [line] ls :start le :end}] (map-indexed vector (:lines p))
-         :let [k (+ first-line j)]
-         :when (and (<= k0 k) (< k k1) (< ua le) (> ub ls))
-         :let [x0 (ct/offset-for-index line (max ua ls))
-               x1 (ct/offset-for-index line (min ub le))]
+         :let [lines (:lines p)]
+         j (range (max 0 (- k0 first-line)) (min (count lines) (- k1 first-line)))
+         :let [{ls :start le :end} (nth lines j)
+               k (+ first-line j)]
+         :when (and (< ua le) (> ub ls))
+         :let [ln (set-line L p j)]
+         :let [x0 (ct/offset-for-index ln (max ua ls))
+               x1 (ct/offset-for-index ln (min ub le))]
          :when (< x0 x1)]
      [k x0 x1])))
 
@@ -221,13 +316,13 @@
   where it crosses paragraph ends and blank lines."
   ([L a b newline-width] (selection-segments L a b newline-width 0 (line-count L)))
   ([L a b newline-width k0 k1]
-   (let [text-end (:end (peek (:paras L)))]  ; the last paragraph has no newline
+   (let [text-end (dec (tree/len (:tree L)))]  ; the last paragraph has no newline
      (sort (concat (range-segments L a b k0 k1)
                    (for [{:keys [p end first-line]} (paras-on-lines L k0 k1)
                          :let [k (+ first-line (dec (count (:lines p))))]
                          :when (and (<= a end) (< end b) (< end text-end) (<= k0 k) (< k k1))
-                         :let [{:keys [line] :as ln} (peek (:lines p))
-                               x (ct/offset-for-index line (:end ln))]]
+                         :let [ln (set-line L p (dec (count (:lines p))))
+                               x (ct/offset-for-index ln (:end ln))]]
                      [k x (+ x newline-width)]))))))
 
 (defn line-start [L k] (position-at L k -1.0e9))
@@ -236,19 +331,18 @@
 (defn prev-position
   "The position one user-perceived character before `pos`."
   [L pos]
-  (let [{:keys [p start]} (nth (:paras L) (para-index L pos))]
+  (let [{:keys [p start]} (para-at L pos)]
     (if (= pos start)
       (max 0 (dec pos))                      ; across the newline
-      (let [[a _] (ct/composed-range (:string p) (dec (cp->u16 p (- pos start))))]
+      (let [[a _] (ct/composed-range (:text p) (dec (cp->u16 p (- pos start))))]
         (+ start (u16->cp p a))))))
 
 (defn next-position
   "The position one user-perceived character after `pos`."
   [L pos]
-  (let [i (para-index L pos)
-        {:keys [p start end]} (nth (:paras L) i)]
+  (let [{:keys [p i start end]} (para-at L pos)]
     (cond
-      (< pos end) (let [[_ b] (ct/composed-range (:string p) (cp->u16 p (- pos start)))]
+      (< pos end) (let [[_ b] (ct/composed-range (:text p) (cp->u16 p (- pos start)))]
                     (+ start (u16->cp p b)))
-      (< i (dec (count (:paras L)))) (inc pos)   ; across the newline
+      (< i (dec (tree/n (:tree L)))) (inc pos)   ; across the newline
       :else pos)))

@@ -2,33 +2,43 @@
   (:require [clojure.test :refer [deftest is testing]]
             [hoatzin.editor :as ed]))
 
+(defn- doc
+  "A document, as the tests write them: {:text string :caret i :anchor j}."
+  [{:keys [text] :as m}]
+  (assoc m :text (:text (ed/doc text))))
+
+(defn- plain
+  "A document with its text as a string, to compare."
+  [d]
+  (update d :text str))
+
 (deftest insert
   (testing "into an empty document"
-    (is (= {:text "hi" :caret 2} (ed/insert ed/empty-doc "hi"))))
+    (is (= {:text "hi" :caret 2} (plain (ed/insert ed/empty-doc "hi")))))
   (testing "at the caret, not the end"
-    (is (= {:text "abXYc" :caret 4} (ed/insert {:text "abc" :caret 2} "XY"))))
+    (is (= {:text "abXYc" :caret 4} (plain (ed/insert (doc {:text "abc" :caret 2}) "XY")))))
   (testing "the caret advances by code points"
-    (is (= {:text "a😀" :caret 2} (ed/insert {:text "a" :caret 1} "😀")))))
+    (is (= {:text "a😀" :caret 2} (plain (ed/insert (doc {:text "a" :caret 1}) "😀"))))))
 
 (deftest delete
-  (is (= {:text "ac" :caret 1} (ed/delete {:text "abc" :caret 2} 1 2)))
+  (is (= {:text "ac" :caret 1} (plain (ed/delete (doc {:text "abc" :caret 2}) 1 2))))
   (testing "range ends in either order"
-    (is (= (ed/delete {:text "abcdef" :caret 0} 1 4)
-           (ed/delete {:text "abcdef" :caret 0} 4 1))))
+    (is (= (ed/delete (doc {:text "abcdef" :caret 0}) 1 4)
+           (ed/delete (doc {:text "abcdef" :caret 0}) 4 1))))
   (testing "an empty range changes nothing but the caret"
-    (is (= {:text "abc" :caret 1} (ed/delete {:text "abc" :caret 3} 1 1)))))
+    (is (= {:text "abc" :caret 1} (plain (ed/delete (doc {:text "abc" :caret 3}) 1 1))))))
 
 (deftest move
-  (is (= {:text "abc" :caret 0} (ed/move {:text "abc" :caret 3} 0)))
+  (is (= {:text "abc" :caret 0} (plain (ed/move (doc {:text "abc" :caret 3}) 0))))
   (testing "drops the selection"
-    (is (= {:text "abc" :caret 1} (ed/move {:text "abc" :caret 3 :anchor 0} 1)))))
+    (is (= {:text "abc" :caret 1} (plain (ed/move (doc {:text "abc" :caret 3 :anchor 0}) 1))))))
 
 (deftest select
-  (let [doc {:text "abcdef" :caret 2}]
+  (let [doc (doc {:text "abcdef" :caret 2})]
     (is (nil? (ed/selection doc)) "nothing selected to begin with")
     (testing "extends from the caret"
       (let [doc (ed/select doc 5)]
-        (is (= {:text "abcdef" :caret 5 :anchor 2} doc))
+        (is (= {:text "abcdef" :caret 5 :anchor 2} (plain doc)))
         (is (= [2 5] (ed/selection doc)))
         (is (= "cde" (ed/selected-text doc)))))
     (testing "keeps its anchor as the caret moves on, either side of it"
@@ -42,12 +52,12 @@
       (is (nil? (ed/selection (ed/select-all ed/empty-doc))) "of nothing selects nothing"))))
 
 (deftest insert-replaces-the-selection
-  (is (= {:text "aXf" :caret 2} (ed/insert {:text "abcdef" :caret 5 :anchor 1} "X")))
-  (is (= {:text "aXf" :caret 2} (ed/insert {:text "abcdef" :caret 1 :anchor 5} "X"))
+  (is (= {:text "aXf" :caret 2} (plain (ed/insert (doc {:text "abcdef" :caret 5 :anchor 1}) "X"))))
+  (is (= {:text "aXf" :caret 2} (plain (ed/insert (doc {:text "abcdef" :caret 1 :anchor 5}) "X")))
       "whichever end the caret is at"))
 
 (deftest delete-drops-the-selection
-  (is (= {:text "af" :caret 1} (ed/delete {:text "abcdef" :caret 5 :anchor 1} 1 5))))
+  (is (= {:text "af" :caret 1} (plain (ed/delete (doc {:text "abcdef" :caret 5 :anchor 1}) 1 5)))))
 
 (deftest word-range
   (let [text "the  hoatzin, a\tbird\n\nend"]
@@ -61,4 +71,4 @@
     (is (= [2 4] (ed/word-range "a 😀😀 b" 3)) "counting code points")))
 
 (deftest select-word
-  (is (= {:text "one two" :anchor 4 :caret 7} (ed/select-word {:text "one two" :caret 0} 5))))
+  (is (= {:text "one two" :anchor 4 :caret 7} (plain (ed/select-word (doc {:text "one two" :caret 0}) 5)))))

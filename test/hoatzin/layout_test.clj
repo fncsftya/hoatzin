@@ -5,7 +5,8 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [hoatzin.coretext :as ct]
-            [hoatzin.layout :as layout]))
+            [hoatzin.layout :as layout]
+            [hoatzin.text :as text]))
 
 (def ^:dynamic *font* nil)
 
@@ -188,17 +189,90 @@
                 (str "range on lines [" k0 ", " k1 ")")))
           (is (empty? (layout/range-segments L 0 (count text) 4 4)) "an empty window"))))))
 
-(deftest paragraph-cache
-  (let [ctx (layout/context *font* 300)]
+(deftest incremental-layout
+  (let [ctx (layout/context *font* 300)
+        t1 (text/of "alpha\nbeta\ngamma\n\n")]
     (try
-      (layout/layout ctx "alpha\nbeta\ngamma\n\n")
-      (let [before @(:cache ctx)]
-        (is (= #{"alpha" "beta" "gamma" ""} (set (keys before)))
-            "identical paragraphs share one entry")
-        (layout/layout ctx "alpha\nBETA\ngamma\n\n")
-        (let [after @(:cache ctx)]
-          (is (identical? (before "alpha") (after "alpha")) "untouched paragraphs are reused")
-          (is (identical? (before "gamma") (after "gamma")))
-          (is (not (contains? after "beta")) "paragraphs no longer present are evicted")
-          (is (contains? after "BETA"))))
+      (let [before (layout/paragraphs (layout/layout ctx t1))
+            t2 (text/replace t1 6 10 "BETA\nand delta")
+            L (layout/layout ctx t2)
+            after (layout/paragraphs L)]
+        (is (= ["alpha" "BETA" "and delta" "gamma" "" ""] (mapv :text after)))
+        (is (identical? (before 0) (after 0)) "untouched paragraphs are reused")
+        (is (identical? (before 2) (after 3)))
+        (is (identical? (before 4) (after 5)))
+        (is (= 6 (layout/line-count L)))
+        (is (= [0.0 3] (layout/caret L 21)) "and found where they moved to"))
+      (testing "an unrelated text is laid out afresh"
+        (let [L (layout/layout ctx "one\ntwo")]
+          (is (= ["one" "two"] (mapv :text (layout/paragraphs L))))))
+      (finally (layout/release-context ctx)))))
+
+(defn- breaks
+  "Where each paragraph of `L` breaks, as UTF-16 [start end] pairs."
+  [L]
+  (mapv (fn [p] (mapv (juxt :start :end) (:lines p))) (layout/paragraphs L)))
+
+(defn- fresh-breaks [width txt]
+  (with-layout width txt (fn [L _] (breaks L))))
+
+(def ^:private long-paragraph
+  (str/join " " (take 4000 (cycle ["the" "hoatzin" "is" "a" "tropical" "bird," "café" "😀"
+                                   "found" "in" "swamps"]))))
+
+(deftest long-paragraphs
+  (testing "wrapping a window at a time breaks where wrapping it whole does"
+    (let [whole (binding [ct/*window* 10000000] (fresh-breaks 300 long-paragraph))]
+      (is (< 100 (count (first whole))))
+      (is (= whole (fresh-breaks 300 long-paragraph)))))
+  (testing "short paragraphs wrapped together break as they do alone"
+    (let [paras ["The hoatzin is a tropical bird found in the swamps." "" "café 😀 naïve"
+                 "short" ""]]
+      (is (= (mapcat #(fresh-breaks 300 %) paras)
+             (fresh-breaks 300 (str/join "\n" paras)))))))
+
+(deftest rewrapping
+  ;; random edits to one long paragraph, laid out incrementally in one
+  ;; context, against laying each version out afresh
+  (let [ctx (layout/context *font* 300)
+        seed (atom 11)
+        rand-int* (fn [n] (swap! seed #(mod (+ (* % 1103515245) 12345) 2147483648))
+                    (mod (quot @seed 65536) n))]
+    (try
+      (layout/layout ctx long-paragraph)
+      (loop [k 0, t (text/of long-paragraph)]
+        (when (< k 60)
+          (let [n (count t)
+                L (layout/layout ctx t)
+                ;; often at a line's start, where a word may move up a line
+                at (if (even? k)
+                     (layout/line-start L (rand-int* (layout/line-count L)))
+                     (rand-int* (inc n)))
+                hi (min n (+ at (rand-int* 6)))
+                ins (nth ["" "x" " " "hoatzin " "😀" "a longer insertion of several words "] (rand-int* 6))
+                t2 (text/replace t at hi ins)]
+            (is (= (fresh-breaks 300 t2) (breaks (layout/layout ctx t2))) (str "edit " k))
+            (recur (inc k) t2))))
+      (finally (layout/release-context ctx)))))
+
+
+(deftest incremental-matches-fresh
+  ;; edits across paragraphs: newlines typed and deleted, ranges removed
+  (let [ctx (layout/context *font* 300)
+        seed (atom 5)
+        rand-int* (fn [n] (swap! seed #(mod (+ (* % 1103515245) 12345) 2147483648))
+                    (mod (quot @seed 65536) n))
+        doc (str/join "\n" (map #(str sentence " " %) (range 40)))]
+    (try
+      (loop [k 0, t (text/of doc)]
+        (when (< k 60)
+          (let [n (count t)
+                at (rand-int* (inc n))
+                hi (min n (+ at (if (zero? (rand-int* 5)) (rand-int* 400) (rand-int* 4))))
+                ins (nth ["" "\n" "x\ny" "\n\n" "bird " sentence] (rand-int* 6))
+                t2 (text/replace t at hi ins)
+                L (layout/layout ctx t2)]
+            (is (= (fresh-breaks 300 t2) (breaks L)) (str "edit " k))
+            (is (= (str t2) (str/join "\n" (map :text (layout/paragraphs L)))))
+            (recur (inc k) t2))))
       (finally (layout/release-context ctx)))))

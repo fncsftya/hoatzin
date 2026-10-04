@@ -16,7 +16,10 @@
  ;; jolt -M:test -i :integration     golden-image tests only
  ;; UPDATE_GOLDEN=1 jolt -M:test -i :integration   regenerate goldens
  :aliases
- {:test {:extra-paths ["test"]
+ {;; jolt -M:bench [--profile] [scenario...]   see bench/hoatzin/bench.clj
+  :bench {:extra-paths ["test" "bench"]
+          :main-opts   ["-m" "hoatzin.bench"]}
+  :test {:extra-paths ["test"]
          :extra-deps  {io.github.cognitect-labs/test-runner
                        {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
          :main-opts   ["-m" "cognitect.test-runner"]}}}

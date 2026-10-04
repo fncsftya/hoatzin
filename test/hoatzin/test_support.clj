@@ -179,10 +179,13 @@
      (try ~@body (finally (close! ~sym)))))
 
 (defn app [s] (:app @s))
-(defn doc [s] (:doc (app s)))
-(defn text [s] (:text (doc s)))
-(defn caret [s] (:caret (doc s)))
-(defn selected [s] (ed/selected-text (doc s)))
+(defn doc
+  "The document, with its text as a string to compare."
+  [s]
+  (update (:doc (app s)) :text str))
+(defn text [s] (str (:text (:doc (app s)))))
+(defn caret [s] (:caret (:doc (app s))))
+(defn selected [s] (ed/selected-text (:doc (app s))))
 
 (defn send!
   "Deliver events at the session's current time, then settle the view, as
