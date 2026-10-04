@@ -204,7 +204,7 @@
   (with-session [s]
     (let [visible? #(app/caret-visible? (t/app s) (:now @s))]
       (is (visible?))
-      (is (= 530 (app/ms-until-blink (t/app s) 0)))
+      (is (= 530 (app/ms-until-wake (t/app s) 0)))
       (t/advance! s 530)
       (is (not (visible?)))
       (t/advance! s 530)
@@ -215,7 +215,7 @@
       (is (visible?) "typing shows the caret straight away")
       (t/send! s {:type :focus :focused? false})
       (is (not (visible?)) "hidden while unfocused")
-      (is (= -1 (app/ms-until-blink (t/app s) (:now @s))) "and nothing to wake up for"))))
+      (is (= -1 (app/ms-until-wake (t/app s) (:now @s))) "and nothing to wake up for"))))
 
 (deftest redraws-only-when-needed
   (with-session [s]
@@ -393,7 +393,7 @@
     (t/type! s "ab")
     (t/press! s sdl/K-LEFT shift)
     (is (not (app/caret-visible? (t/app s) 0)))
-    (is (= -1 (app/ms-until-blink (t/app s) 0)) "no blinking to wake up for")
+    (is (= -1 (app/ms-until-wake (t/app s) 0)) "no blinking to wake up for")
     (t/press! s sdl/K-RIGHT)
     (is (app/caret-visible? (t/app s) (:now @s)))))
 
@@ -511,3 +511,154 @@
       (t/send! s {:type :release})
       (t/send! s {:type :drag :x 5000.0 :y y})
       (is (= "one two" (t/selected s)) "until the button comes up"))))
+
+;; ---------------------------------------------------------------- scroll bar
+
+(def forty-lines (str/join "\n" (map #(str "Line " %) (range 1 41))))
+
+(defn- long-session!
+  "Paste forty lines and go back to the top."
+  [s]
+  (t/set-clipboard! s forty-lines)
+  (t/press! s sdl/K-V cmd)
+  (t/press! s sdl/K-UP cmd))
+
+(defn- max-scroll [s] (:max-scroll (app/scrollbar (t/app s))))
+(defn- bar-x [s] (let [{:keys [x w]} (app/scrollbar (t/app s))] (+ x (/ w 2.0))))
+(defn- thumb-mid [s] (let [{:keys [thumb-y thumb-h]} (app/scrollbar (t/app s))]
+                       (+ thumb-y (/ thumb-h 2.0))))
+
+(deftest scrollbar-only-when-the-text-overflows
+  (with-session [s]
+    (t/type! s "short")
+    (is (nil? (app/scrollbar (t/app s))))
+    (long-session! s)
+    (let [{:keys [x w top height thumb-y thumb-h]} (app/scrollbar (t/app s))
+          [width h] (:size (t/app s))]
+      (is (= width (+ x w)) "at the right edge")
+      (is (= top thumb-y) "the thumb starts at the top")
+      (is (< 0 thumb-h height) "and is shorter than the track")
+      (is (< (+ top height) h)))))
+
+(deftest the-thumb-follows-the-scroll
+  (with-session [s]
+    (long-session! s)
+    (t/press! s sdl/K-DOWN cmd)
+    (let [{:keys [top height thumb-y thumb-h]} (app/scrollbar (t/app s))]
+      (is (= (max-scroll s) (:scroll (t/app s))))
+      (is (= (+ top height) (+ thumb-y thumb-h)) "at the end, the thumb is at the bottom"))))
+
+(deftest dragging-the-thumb-scrolls
+  (with-session [s]
+    (long-session! s)
+    (let [doc (t/doc s)
+          [_ h] (:size (t/app s))
+          y (thumb-mid s)]
+      (t/send! s {:type :click :x (bar-x s) :y y})
+      (is (= :arrow (app/pointer (t/app s))) "the arrow while holding the thumb")
+      (t/send! s {:type :drag :x 0.0 :y (+ y 40.0)})
+      (let [mid (:scroll (t/app s))]
+        (is (< 0 mid (max-scroll s)) "part way")
+        (t/send! s {:type :drag :x 0.0 :y (+ y 80.0)})
+        (is (< mid (:scroll (t/app s))) "and further"))
+      (t/send! s {:type :drag :x 0.0 :y (double (* 2 h))})
+      (is (= (max-scroll s) (:scroll (t/app s))) "no further than the end")
+      (t/send! s {:type :drag :x 0.0 :y -1000.0})
+      (is (zero? (:scroll (t/app s))) "nor above the top")
+      (t/send! s {:type :release})
+      (is (= doc (t/doc s)) "the caret and text are untouched")
+      (t/send! s {:type :drag :x 0.0 :y (double h)})
+      (is (zero? (:scroll (t/app s))) "let go, the thumb stays put"))))
+
+(deftest clicking-the-track-pages
+  (with-session [s]
+    (long-session! s)
+    (let [[_ h] (:size (t/app s))
+          lh (layout/line-height (:layout (t/app s)))]
+      (t/click! s (bar-x s) (- h 4.0))
+      (let [page (:scroll (t/app s))]
+        (is (pos? page) "below the thumb pages down")
+        (is (< page (second (:size (t/app s)))) "by less than a screen")
+        (is (>= page lh))
+        (t/click! s (bar-x s) (- h 4.0))
+        (let [twice (:scroll (t/app s))]
+          (is (= (min (* 2 page) (max-scroll s)) twice))
+          (t/click! s (bar-x s) 4.0)
+          (is (= (- twice page) (:scroll (t/app s))) "above it pages up"))
+        (is (= 0 (t/caret s)) "the caret stays where it was")
+        (is (nil? (t/selected s)))))))
+
+(deftest the-scroll-bar-works-while-composing
+  (with-session [s]
+    (long-session! s)
+    (t/compose! s "´")
+    (t/click! s (bar-x s) (- (second (:size (t/app s))) 4.0))
+    (is (pos? (:scroll (t/app s))))
+    (is (some? (:composition (t/app s))))))
+
+(deftest hovering-the-scroll-bar
+  (with-session [s]
+    (long-session! s)
+    (t/render! s)
+    (is (= :text (app/pointer (t/app s))))
+    (t/send! s {:type :move :x (bar-x s) :y 40.0})
+    (is (= :arrow (app/pointer (t/app s))) "an arrow over the bar")
+    (is (app/needs-draw? (t/app s) 0) "which widens")
+    (t/render! s)
+    (t/send! s {:type :move :x (bar-x s) :y 60.0})
+    (is (not (app/needs-draw? (t/app s) 0)) "moving along it changes nothing")
+    (t/send! s {:type :move :x 40.0 :y 60.0})
+    (is (= :text (app/pointer (t/app s))) "an I-beam over the text")
+    (t/send! s {:type :move :x (bar-x s) :y 40.0} {:type :leave})
+    (is (= :text (app/pointer (t/app s))) "and once the pointer leaves the window"))
+  (with-session [s]
+    (t/type! s "fits")
+    (t/send! s {:type :move :x 795.0 :y 40.0})
+    (is (= :text (app/pointer (t/app s))) "no bar, no arrow")))
+
+(deftest a-drag-held-below-the-text-keeps-scrolling
+  (with-session [s]
+    (long-session! s)
+    (let [[_ h] (:size (t/app s))
+          below (double (- h 2))]
+      (t/send! s {:type :click :x 60.0 :y 60.0} {:type :drag :x 60.0 :y below})
+      (let [scroll (:scroll (t/app s))
+            caret  (t/caret s)]
+        (is (= 50 (app/ms-until-wake (t/app s) (:now @s))) "it asks to wake up soon")
+        (t/advance! s 50)
+        (t/send! s {:type :tick})
+        (is (< scroll (:scroll (t/app s))) "and scrolls when it does")
+        (is (< caret (t/caret s)) "extending the selection"))
+      (dotimes [_ 40] (t/send! s {:type :tick}))
+      (is (= (max-scroll s) (:scroll (t/app s))) "until the end")
+      (is (= (dec (layout/line-count (:layout (t/app s)))) (caret-line s)) "the last line")
+      (let [a (t/app s)]
+        (t/send! s {:type :tick})
+        (is (identical? a (t/app s)) "where ticks change nothing"))
+      (t/send! s {:type :release})
+      (is (= -1 (app/ms-until-wake (t/app s) (:now @s))) "let go, nothing to wake for"))))
+
+(deftest a-drag-held-above-the-text-scrolls-up
+  (with-session [s]
+    (t/set-clipboard! s forty-lines)
+    (t/press! s sdl/K-V cmd)
+    (let [scroll (:scroll (t/app s))]
+      (t/send! s {:type :click :x 60.0 :y 200.0} {:type :drag :x 60.0 :y 2.0})
+      (dotimes [_ 3] (t/send! s {:type :tick}))
+      (is (< (:scroll (t/app s)) scroll)))))
+
+(deftest ticks-without-a-drag-do-nothing
+  (with-session [s]
+    (long-session! s)
+    (let [a (t/app s)]
+      (t/send! s {:type :tick})
+      (is (= (dissoc a :layout) (dissoc (t/app s) :layout))))))
+
+(deftest an-off-screen-caret-does-not-blink
+  (with-session [s]
+    (long-session! s)
+    (is (= 530 (app/ms-until-wake (t/app s) 0)))
+    (t/send! s {:type :wheel :dy -10})
+    (is (= -1 (app/ms-until-wake (t/app s) 0)) "scrolled away, nothing to wake for")
+    (t/render! s)
+    (is (not (app/needs-draw? (t/app s) 530)) "nor to redraw")))

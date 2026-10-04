@@ -172,6 +172,22 @@
       (testing "stopping at a newline doesn't cover it"
         (is (= [0] (mapv first (layout/selection-segments L 0 3 5))))))))
 
+(deftest segments-in-a-window-of-lines
+  (let [text (str sentence "\n\n" sentence "\n" sentence)]
+    (with-layout 300 text
+      (fn [L _]
+        (let [n    (layout/line-count L)
+              all  (layout/selection-segments L 0 (count text) 5)
+              in   (fn [k0 k1] (filterv #(< (dec k0) (first %) k1) all))]
+          (is (< 6 n))
+          (doseq [[k0 k1] [[0 n] [0 1] [2 5] [3 4] [(dec n) n] [-3 2] [5 (+ n 9)]]]
+            (is (= (in k0 k1) (vec (layout/selection-segments L 0 (count text) 5 k0 k1)))
+                (str "selection on lines [" k0 ", " k1 ")"))
+            (is (= (filterv #(< (dec k0) (first %) k1) (layout/range-segments L 3 (- (count text) 3)))
+                   (vec (layout/range-segments L 3 (- (count text) 3) k0 k1)))
+                (str "range on lines [" k0 ", " k1 ")")))
+          (is (empty? (layout/range-segments L 0 (count text) 4 4)) "an empty window"))))))
+
 (deftest paragraph-cache
   (let [ctx (layout/context *font* 300)]
     (try

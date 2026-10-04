@@ -9,6 +9,7 @@
 ;; Event types
 (def EVENT-QUIT                  0x100)
 (def EVENT-WINDOW-EXPOSED        0x204)
+(def EVENT-WINDOW-MOUSE-LEAVE    0x20d)
 (def EVENT-WINDOW-RESIZED        0x206)
 (def EVENT-WINDOW-PIXEL-SIZE-CHANGED 0x207)
 (def EVENT-WINDOW-FOCUS-GAINED   0x20e)
@@ -45,6 +46,7 @@
 (def BUTTON-LEFT 1)
 (def BUTTON-LMASK 1)
 (def MOUSEWHEEL-FLIPPED 1)
+(def SYSTEM-CURSOR-DEFAULT 0)
 (def SYSTEM-CURSOR-TEXT 1)
 
 ;; SDL_Event is a 128-byte union; every member starts with a Uint32 type.

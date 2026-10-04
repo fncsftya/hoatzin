@@ -178,33 +178,57 @@
         (dec pos)
         pos))))
 
+(defn- para-of-line
+  "The index of the paragraph holding visual line `k`."
+  [{:keys [paras]} k]
+  (loop [lo 0, hi (dec (count paras))]
+    (if (>= lo hi)
+      lo
+      (let [mid (quot (+ lo hi 1) 2)]
+        (if (<= (:first-line (nth paras mid)) k) (recur mid hi) (recur lo (dec mid)))))))
+
+(defn- paras-on-lines
+  "The paragraphs with a visual line in [k0, k1)."
+  [L k0 k1]
+  (let [k0 (max k0 0)
+        k1 (min k1 (line-count L))]
+    (if (< k0 k1)
+      (subvec (:paras L) (para-of-line L k0) (inc (para-of-line L (dec k1))))
+      [])))
+
 (defn range-segments
   "The visual extent of positions [a, b): a [k x0 x1] for each visual line
-  the range covers, with x0 < x1 in pixels."
-  [L a b]
-  (for [{:keys [p start end first-line]} (:paras L)
-        :when (and (< a end) (> b start))
-        :let [ua (cp->u16 p (- (max a start) start))
-              ub (cp->u16 p (- (min b end) start))]
-        [j {:keys [line] ls :start le :end}] (map-indexed vector (:lines p))
-        :when (and (< ua le) (> ub ls))
-        :let [x0 (ct/offset-for-index line (max ua ls))
-              x1 (ct/offset-for-index line (min ub le))]
-        :when (< x0 x1)]
-    [(+ first-line j) x0 x1]))
+  the range covers, with x0 < x1 in pixels. Given [k0, k1), only for the
+  visual lines in that window, so the cost follows what is on screen rather
+  than the length of the range."
+  ([L a b] (range-segments L a b 0 (line-count L)))
+  ([L a b k0 k1]
+   (for [{:keys [p start end first-line]} (paras-on-lines L k0 k1)
+         :when (and (< a end) (> b start))
+         :let [ua (cp->u16 p (- (max a start) start))
+               ub (cp->u16 p (- (min b end) start))]
+         [j {:keys [line] ls :start le :end}] (map-indexed vector (:lines p))
+         :let [k (+ first-line j)]
+         :when (and (<= k0 k) (< k k1) (< ua le) (> ub ls))
+         :let [x0 (ct/offset-for-index line (max ua ls))
+               x1 (ct/offset-for-index line (min ub le))]
+         :when (< x0 x1)]
+     [k x0 x1])))
 
 (defn selection-segments
   "Like `range-segments`, plus a `newline-width` px box after the last line
   of each paragraph whose newline the range covers, so a selection shows
   where it crosses paragraph ends and blank lines."
-  [L a b newline-width]
-  (let [paras (butlast (:paras L))]       ; the last paragraph has no newline
-    (sort (concat (range-segments L a b)
-                  (for [{:keys [p end first-line]} paras
-                        :when (and (<= a end) (< end b))
-                        :let [{:keys [line] :as ln} (peek (:lines p))
-                              x (ct/offset-for-index line (:end ln))]]
-                    [(+ first-line (dec (count (:lines p)))) x (+ x newline-width)])))))
+  ([L a b newline-width] (selection-segments L a b newline-width 0 (line-count L)))
+  ([L a b newline-width k0 k1]
+   (let [text-end (:end (peek (:paras L)))]  ; the last paragraph has no newline
+     (sort (concat (range-segments L a b k0 k1)
+                   (for [{:keys [p end first-line]} (paras-on-lines L k0 k1)
+                         :let [k (+ first-line (dec (count (:lines p))))]
+                         :when (and (<= a end) (< end b) (< end text-end) (<= k0 k) (< k k1))
+                         :let [{:keys [line] :as ln} (peek (:lines p))
+                               x (ct/offset-for-index line (:end ln))]]
+                     [k x (+ x newline-width)]))))))
 
 (defn line-start [L k] (position-at L k -1.0e9))
 (defn line-end   [L k] (position-at L k 1.0e9))

@@ -32,11 +32,12 @@
       (when (= sdl/BUTTON-LEFT (ffi/read ev :uint8 sdl/O-button-button))
         {:type :release})
       sdl/EVENT-MOUSE-MOTION
-      (when (pos? (bit-and sdl/BUTTON-LMASK (ffi/read ev :uint sdl/O-motion-state)))
-        (sdl/convert-event-to-render-coordinates renderer ev)
-        {:type :drag
-         :x (ffi/read ev :float sdl/O-motion-x)
-         :y (ffi/read ev :float sdl/O-motion-y)})
+      (do (sdl/convert-event-to-render-coordinates renderer ev)
+          {:type (if (pos? (bit-and sdl/BUTTON-LMASK (ffi/read ev :uint sdl/O-motion-state)))
+                   :drag
+                   :move)
+           :x (ffi/read ev :float sdl/O-motion-x)
+           :y (ffi/read ev :float sdl/O-motion-y)})
       sdl/EVENT-MOUSE-WHEEL
       {:type :wheel
        :dy (* (ffi/read ev :float sdl/O-wheel-y)
@@ -44,6 +45,7 @@
       sdl/EVENT-WINDOW-FOCUS-GAINED {:type :focus :focused? true}
       sdl/EVENT-WINDOW-FOCUS-LOST   {:type :focus :focused? false}
       sdl/EVENT-WINDOW-EXPOSED      {:type :expose}
+      sdl/EVENT-WINDOW-MOUSE-LEAVE  {:type :leave}
       nil)))
 
 (defn- set-input-area!
@@ -54,27 +56,31 @@
     (sdl/set-text-input-area window (sdl/set-rect! irect (/ x d) (/ y d) (max 1 (/ w d)) (/ h d)) 0)))
 
 (defn- run-loop
-  "Run until quit. `latest` always holds the current app, for cleanup."
-  [window latest ev irect]
+  "Run until quit. `latest` always holds the current app, for cleanup.
+  `cursors` maps hoatzin.app/pointer's answers to SDL cursors."
+  [window latest ev irect cursors]
   (let [renderer (:renderer @latest)
         step (fn [app]
                (if-let [e (decode renderer ev)]
                  (app/handle app e (sdl/get-ticks))
                  app))]
-    (loop [app @latest]
+    (loop [app @latest, shown-pointer nil]
       (reset! latest app)
       (when-not (:quit? app)
-        (let [app (if (sdl/wait-event-timeout ev (app/ms-until-blink app (sdl/get-ticks)))
+        (let [app (if (sdl/wait-event-timeout ev (app/ms-until-wake app (sdl/get-ticks)))
                     (loop [app (step app)]
                       (if (sdl/poll-event ev) (recur (step app)) app))
-                    app)
+                    (app/handle app {:type :tick} (sdl/get-ticks)))
               app (app/settle app)
-              now (sdl/get-ticks)]
+              now (sdl/get-ticks)
+              pointer (app/pointer app)]
+          (when-not (= pointer shown-pointer)
+            (sdl/set-cursor (cursors pointer)))
           (if (app/needs-draw? app now)
             (let [app (app/draw! app now)]
               (set-input-area! window app irect)
-              (recur app))
-            (recur app)))))))
+              (recur app pointer))
+            (recur app pointer)))))))
 
 (defn -main [& _args]
   ;; We draw the composition (marked text) ourselves: SDL then sends it as
@@ -91,9 +97,9 @@
                            pwin pren)
                           "SDL_CreateWindowAndRenderer")
               [(ffi/read pwin :pointer) (ffi/read pren :pointer)]))
-          cursor (sdl/create-system-cursor sdl/SYSTEM-CURSOR-TEXT)
+          cursors {:text  (sdl/create-system-cursor sdl/SYSTEM-CURSOR-TEXT)
+                   :arrow (sdl/create-system-cursor sdl/SYSTEM-CURSOR-DEFAULT)}
           latest (atom nil)]
-      (sdl/set-cursor cursor)
       (sdl/check! (sdl/start-text-input window) "SDL_StartTextInput")
       (try
         (reset! latest (app/create {:renderer     renderer
@@ -102,10 +108,10 @@
                                     :set-clipboard-fn #(sdl/set-clipboard-text %)
                                     :now          (sdl/get-ticks)}))
         (with-open [a (ffi/confined-arena)]
-          (run-loop window latest (ffi/alloc a sdl/EVENT-SIZE) (ffi/alloc a sdl/rect)))
+          (run-loop window latest (ffi/alloc a sdl/EVENT-SIZE) (ffi/alloc a sdl/rect) cursors))
         (finally
           (some-> @latest app/destroy!)
-          (sdl/destroy-cursor cursor)
+          (run! sdl/destroy-cursor (vals cursors))
           (sdl/destroy-renderer renderer)
           (sdl/destroy-window window))))
     (finally

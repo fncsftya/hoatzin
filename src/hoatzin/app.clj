@@ -19,8 +19,11 @@
                                     coordinates; shift extends the selection,
                                     a double click (:clicks 2) selects a word
     {:type :drag  :x x :y y}        pointer moved with the left button down
+    {:type :move  :x x :y y}        pointer moved with no button down
+    {:type :leave}                  pointer left the window
     {:type :release}                left button up
     {:type :wheel :dy lines}        scroll; positive is towards the top
+    {:type :tick}                   nothing happened for `ms-until-wake`
     {:type :focus :focused? bool}
     {:type :expose}                 the window needs repainting
     {:type :quit}"
@@ -38,10 +41,18 @@
    :margin      24             ; points
    :blink-ms    530            ; the macOS caret blink period
    :wheel-lines 3
+   :scrollbar-width 14         ; points: the bar's column at the right edge
+   :thumb-width 6              ; points; wider while the bar is in use
+   :thumb-width-active 10
+   :thumb-min   32             ; points: the shortest the thumb gets
+   :autoscroll-ms 50           ; how often a drag held outside the text scrolls
    :background  [30 30 46]
    :foreground  [235 230 220]
    :selection   [76 84 128]
-   :selection-unfocused [58 60 80]})
+   :selection-unfocused [58 60 80]
+   :scrollbar-track [38 38 56]
+   :scrollbar-thumb [78 80 102]
+   :scrollbar-thumb-active [128 132 158]})
 
 ;; The app is a map:
 ;;   :renderer :density-fn :clipboard-fn   supplied by the host
@@ -51,8 +62,11 @@
 ;;   :doc :goal-x                          the document; column for up/down
 ;;   :upstream?                            the caret, at a wrap point, is drawn
 ;;                                         at the end of the line above
-;;   :dragging? :drag-word                 a click is extending the selection
-;;                                         (by words, from :drag-word [lo hi])
+;;   :dragging? :drag-word :drag-point     a click is extending the selection
+;;                                         (by words, from :drag-word [lo hi]),
+;;                                         the pointer last at :drag-point [x y]
+;;   :hover? :grab                         the pointer is over the scroll bar;
+;;                                         the thumb is held :grab px below its top
 ;;   :composition                          {:text :cursor} while composing, or nil
 ;;   :size :scroll                         output size and scroll, in pixels
 ;;   :focused? :blink-from                 the caret blinks from :blink-from
@@ -122,10 +136,43 @@
 
 (defn- view-height [app] (- (second (:size app)) (* 2 (px app (:margin app)))))
 
+(defn- content-height [app]
+  (let [L (:layout app)] (* (layout/line-count L) (layout/line-height L))))
+
+(defn- max-scroll [app] (max 0 (- (content-height app) (view-height app))))
+
 (defn- clamp-scroll [app]
-  (let [L (:layout app)
-        content (* (layout/line-count L) (layout/line-height L))]
-    (update app :scroll #(max 0 (min % (- content (view-height app)))))))
+  (update app :scroll #(max 0 (min % (max-scroll app)))))
+
+(defn- scroll-to [app scroll]
+  (-> app (assoc :scroll (long (Math/round (double scroll)))) clamp-scroll (assoc :dirty? true)))
+
+(defn- visible-lines
+  "The visual lines [k0, k1) at least partly in view."
+  [{:keys [layout scroll] :as app}]
+  (let [lh (layout/line-height layout)]
+    [(quot scroll lh)
+     (min (layout/line-count layout) (inc (quot (+ scroll (view-height app)) lh)))]))
+
+(defn scrollbar
+  "The scroll bar in render pixels, or nil when the text fits: the bar's
+  column {:x :w}, the track {:top :height}, the thumb {:thumb-y :thumb-h},
+  and the :max-scroll the track's travel stands for."
+  [app]
+  (let [ms (max-scroll app)]
+    (when (pos? ms)
+      (let [[w h] (:size app)
+            inset   (px app 2)
+            track   (- h (* 2 inset))
+            thumb-h (min track (max (px app (:thumb-min app))
+                                    (quot (* track (view-height app)) (content-height app))))
+            bw      (px app (:scrollbar-width app))]
+        {:x (- w bw) :w bw :top inset :height track :thumb-h thumb-h
+         :thumb-y (+ inset (long (Math/round (/ (* (- track thumb-h) (double (:scroll app))) ms))))
+         :max-scroll ms}))))
+
+(defn- on-scrollbar? [app x]
+  (when-let [{bx :x} (scrollbar app)] (>= x bx)))
 
 (defn- follow-caret
   "Scroll just enough to bring the caret's line into view."
@@ -296,18 +343,19 @@
       (assoc :doc (ed/select (ed/move (:doc app) anchor) pos) :goal-x nil :upstream? false)
       (touched now)))
 
-(defn- on-click [app now x y mod clicks]
-  (let [[k x] (point->line app x y)
+(defn- on-click [app now x0 y mod clicks]
+  (let [[k x] (point->line app x0 y)
         word (when (>= clicks 2) (word-at app k x))]
     (-> (if-let [[lo hi] word]
           (select-range app now lo hi)
           (move-on-line app now (pos? (bit-and mod sdl/KMOD-SHIFT))
                         k (layout/position-at (:layout app) k x)))
-        (assoc :dragging? true :drag-word word))))
+        (assoc :dragging? true :drag-word word :drag-point [x0 y]))))
 
-(defn- on-drag [app now x y]
-  (let [[k x] (point->line app x y)
-        pos (layout/position-at (:layout app) k x)]
+(defn- on-drag [app now x0 y]
+  (let [[k x] (point->line app x0 y)
+        pos (layout/position-at (:layout app) k x)
+        app (assoc app :drag-point [x0 y])]
     (cond
       (not (:dragging? app)) app
       ;; After a double click, the selection grows a word at a time and
@@ -321,11 +369,47 @@
       :else (move-on-line app now true k pos))))
 
 (defn- on-wheel [app dy]
-  (-> app
-      (update :scroll #(- % (long (Math/round (* dy (:wheel-lines app)
-                                                 (layout/line-height (:layout app)))))))
-      clamp-scroll
-      (assoc :dirty? true)))
+  (scroll-to app (- (:scroll app) (* dy (:wheel-lines app) (layout/line-height (:layout app))))))
+
+(defn- on-scrollbar-click
+  "Grab the thumb, or page towards the click on either side of it."
+  [app y]
+  (let [{:keys [thumb-y thumb-h]} (scrollbar app)
+        lh   (layout/line-height (:layout app))
+        page (max lh (- (view-height app) lh))]
+    (cond (< y thumb-y)              (scroll-to app (- (:scroll app) page))
+          (>= y (+ thumb-y thumb-h)) (scroll-to app (+ (:scroll app) page))
+          :else                      (assoc app :grab (- y thumb-y) :dirty? true))))
+
+(defn- on-thumb-drag [app y]
+  (if-let [{:keys [top height thumb-h max-scroll]} (scrollbar app)]
+    (let [travel (- height thumb-h)]
+      (scroll-to app (if (pos? travel)
+                       (* max-scroll (/ (- y (:grab app) top) (double travel)))
+                       0)))
+    app))
+
+(defn- hover [app over?]
+  (if (= over? (boolean (:hover? app)))
+    app
+    (assoc app :hover? over? :dirty? true)))
+
+(defn- autoscrolling?
+  "Whether a text drag is held above or below the text, which scrolls."
+  [app]
+  (when-let [[_ y] (and (:dragging? app) (:drag-point app))]
+    (let [m (px app (:margin app))]
+      (or (< y m) (>= y (+ m (view-height app)))))))
+
+(defn- autoscroll
+  "Drag again at the held point: it is further along the text now that the
+  last step scrolled, so the selection grows and scrolls on."
+  [app now]
+  (if (autoscrolling? app)
+    (let [[x y] (:drag-point app)
+          app2  (on-drag app now x y)]
+      (if (= (:doc app2) (:doc app)) app app2))
+    app))
 
 (defn- compose
   "Show (or, for \"\", end) the input method's composition at the caret.
@@ -353,36 +437,25 @@
       ;; While composing, keys and clicks belong to the input method, and the
       ;; layout shows the composition, so its positions aren't the document's.
       :key    (if composing? app (on-key app now (:key event) (:mod event 0)))
-      :click  (if composing? app (on-click app now (:x event) (:y event)
-                                           (:mod event 0) (:clicks event 1)))
-      :drag   (if composing? app (on-drag app now (:x event) (:y event)))
-      :release (dissoc app :dragging? :drag-word)
+      ;; The scroll bar leaves the document alone, so it works while composing.
+      :click  (cond (on-scrollbar? app (:x event)) (on-scrollbar-click app (:y event))
+                    composing? app
+                    :else (on-click app now (:x event) (:y event)
+                                    (:mod event 0) (:clicks event 1)))
+      :drag   (cond (:grab app) (on-thumb-drag app (:y event))
+                    composing? app
+                    :else (on-drag app now (:x event) (:y event)))
+      :release (cond-> (dissoc app :dragging? :drag-word :drag-point :grab)
+                 (:grab app) (assoc :dirty? true))
+      :move   (hover app (boolean (on-scrollbar? app (:x event))))
+      :leave  (hover app false)
+      :tick   (autoscroll app now)
       :wheel  (on-wheel app (:dy event))
       :focus  (assoc app :focused? (:focused? event) :blink-from now :dirty? true)
       :expose (assoc app :dirty? true)
       app)))
 
 ;; ---------------------------------------------------------------- drawing
-
-(defn- caret-blinking?
-  "The caret shows while focused and nothing is selected; a selection
-  replaces it."
-  [app]
-  (and (:focused? app) (nil? (ed/selection (:doc app)))))
-
-(defn caret-visible? [app now]
-  (and (caret-blinking? app) (even? (quot (- now (:blink-from app)) (:blink-ms app)))))
-
-(defn ms-until-blink
-  "How long the host may sleep: until the caret next toggles, or
-  indefinitely (-1) when there is no blinking caret, when nothing changes
-  without an event."
-  [app now]
-  (let [b (:blink-ms app)]
-    (if (caret-blinking? app) (- b (mod (- now (:blink-from app)) b)) -1)))
-
-(defn needs-draw? [app now]
-  (or (:dirty? app) (not= (caret-visible? app now) (:drawn-phase app))))
 
 (defn caret-rect
   "The caret's [x y w h] in render pixels."
@@ -396,6 +469,55 @@
      (max 1 (px app 1))
      caret-height]))
 
+(defn- caret-in-view? [app]
+  (let [[_ y _ h] (caret-rect app)
+        m (px app (:margin app))]
+    (and (< y (+ m (view-height app))) (> (+ y h) m))))
+
+(defn- caret-blinking?
+  "The caret shows while focused and nothing is selected; a selection
+  replaces it. Scrolled out of view, it has nothing to blink."
+  [app]
+  (and (:focused? app) (nil? (ed/selection (:doc app))) (caret-in-view? app)))
+
+(defn caret-visible? [app now]
+  (and (caret-blinking? app) (even? (quot (- now (:blink-from app)) (:blink-ms app)))))
+
+(defn ms-until-wake
+  "How long the host may sleep before sending a :tick: until the caret next
+  toggles or a held drag next scrolls, or indefinitely (-1) when nothing
+  changes without an event."
+  [app now]
+  (let [b (:blink-ms app)
+        blink (if (caret-blinking? app) (- b (mod (- now (:blink-from app)) b)) -1)]
+    (cond (not (autoscrolling? app)) blink
+          (neg? blink)               (:autoscroll-ms app)
+          :else                      (min blink (:autoscroll-ms app)))))
+
+(defn pointer
+  "The mouse cursor the pointer should show: :arrow over the scroll bar,
+  else :text."
+  [app]
+  (if (or (:hover? app) (:grab app)) :arrow :text))
+
+(defn needs-draw? [app now]
+  (or (:dirty? app) (not= (caret-visible? app now) (:drawn-phase app))))
+
+(defn- draw-scrollbar! [app]
+  (when-let [{:keys [x w top height thumb-y thumb-h]} (scrollbar app)]
+    (let [{:keys [renderer scratch]} app
+          frect   (:frect scratch)
+          active? (or (:hover? app) (:grab app))
+          tw      (px app (if active? (:thumb-width-active app) (:thumb-width app)))
+          tx      (- (+ x w) (px app 2) tw)
+          [tr tg tb] (:scrollbar-track app)
+          [r g b] (if active? (:scrollbar-thumb-active app) (:scrollbar-thumb app))]
+      (when active?
+        (sdl/set-render-draw-color renderer tr tg tb 255)
+        (sdl/render-fill-rect renderer (sdl/set-frect! frect x 0 w (second (:size app)))))
+      (sdl/set-render-draw-color renderer r g b 255)
+      (sdl/render-fill-rect renderer (sdl/set-frect! frect tx thumb-y tw thumb-h)))))
+
 (defn draw!
   "Render the app at time `now` (ms), present it, and return the app."
   [app now]
@@ -405,8 +527,7 @@
         {:keys [line-height baseline]} (:metrics layout)
         m  (px app (:margin app))
         vh (view-height app)
-        first-k (quot scroll line-height)
-        last-k  (min (layout/line-count layout) (inc (quot (+ scroll vh) line-height)))
+        [first-k last-k] (visible-lines app)
         caret?  (caret-visible? app now)
         [br bg bb] (:background app)
         [fr fg fb] (:foreground app)]
@@ -417,7 +538,7 @@
       (let [[r g b] (if (:focused? app) (:selection app) (:selection-unfocused app))
             nl (max 1 (quot (get-in layout [:metrics :caret-height]) 4))]
         (sdl/set-render-draw-color renderer r g b 255)
-        (doseq [[k x0 x1] (layout/selection-segments layout lo hi nl)
+        (doseq [[k x0 x1] (layout/selection-segments layout lo hi nl first-k last-k)
                 :let [x0 (long (Math/floor x0))]]
           (sdl/render-fill-rect renderer
                                 (sdl/set-frect! frect (+ m x0) (+ m (- (* k line-height) scroll))
@@ -435,7 +556,7 @@
       (let [a (get-in app [:doc :caret])
             thickness (max 1 (px app 1))
             below     (max 1 (px app 2))]
-        (doseq [[k x0 x1] (layout/range-segments layout a (+ a (count comp)))]
+        (doseq [[k x0 x1] (layout/range-segments layout a (+ a (count comp)) first-k last-k)]
           (sdl/render-fill-rect renderer
                                 (sdl/set-frect! frect
                                                 (+ m (long (Math/floor x0)))
@@ -447,6 +568,7 @@
         (sdl/set-render-draw-color renderer fr fg fb 255)
         (sdl/render-fill-rect renderer (sdl/set-frect! frect x y cw ch))))
     (sdl/set-render-clip-rect renderer ffi/null)
+    (draw-scrollbar! app)
     (sdl/render-present renderer)
     (textures/end-frame! textures)
     (assoc app :dirty? false :drawn-phase caret?)))
