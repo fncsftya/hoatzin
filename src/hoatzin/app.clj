@@ -7,8 +7,13 @@
   (read the clipboard) and :set-clipboard-fn (write it).
   That is what lets tests drive the editor headlessly and deterministically.
 
+  The editor is modal. In :normal mode the text is left alone: keys move the
+  caret and select, `i` enters :insert mode, and the caret is a block. In
+  :insert mode typing edits the text, and escape goes back to :normal.
+
   Events:
-    {:type :text  :text s}          committed text input
+    {:type :text  :text s}          committed text input; in normal mode, a
+                                    command
     {:type :composition :text s :cursor i}
                                     input-method composition (marked text),
                                     e.g. the accent after option-e; "" ends it.
@@ -38,6 +43,8 @@
 (def defaults
   {:family      ct/default-family
    :font-size   20             ; points; scaled by the pixel density
+   :status-font-size 13        ; points: the status bar's mode label
+   :status-padding 4           ; points above and below the label
    :margin      24             ; points
    :blink-ms    530            ; the macOS caret blink period
    :wheel-lines 3
@@ -52,11 +59,19 @@
    :selection-unfocused [58 60 80]
    :scrollbar-track [38 38 56]
    :scrollbar-thumb [78 80 102]
-   :scrollbar-thumb-active [128 132 158]})
+   :scrollbar-thumb-active [128 132 158]
+   :status-background [24 24 37]
+   :status-foreground [170 168 190]})
+
+(def mode-labels {:normal "NORMAL" :insert "INSERT"})
 
 ;; The app is a map:
 ;;   :renderer :density-fn :clipboard-fn   supplied by the host
+;;   :mode                                 :normal or :insert
 ;;   :density :font                        the font, at the current density
+;;   :status                               the status bar's {:font :metrics
+;;                                         :labels}, :labels typeset per mode
+;;   :status-textures                      its label texture cache
 ;;   :ctx :layout :laid-out                layout context, layout, its text
 ;;   :textures :scratch                    line texture cache, FFI scratch
 ;;   :doc :goal-x                          the document; column for up/down
@@ -103,10 +118,22 @@
   [{:keys [layout composition upstream?] :as app}]
   (layout/caret layout (view-caret app) (and upstream? (nil? composition))))
 
-(defn- release-view! [{:keys [ctx textures font]}]
+(defn- status-view
+  "The status bar's font, its metrics and each mode's label, typeset."
+  [app]
+  (let [font (ct/font (:family app) (* (:status-font-size app) (:density app)))]
+    {:font    font
+     :metrics (layout/metrics font)
+     :labels  (update-vals mode-labels #(ct/typeset font % 1.0e9))}))
+
+(defn- release-view! [{:keys [ctx textures font status status-textures]}]
   (some-> ctx layout/release-context)
   (some-> textures textures/clear!)
-  (some-> font ct/release-font))
+  (some-> font ct/release-font)
+  (some-> status-textures textures/clear!)
+  (when status
+    (run! ct/release-paragraph (vals (:labels status)))
+    (ct/release-font (:font status))))
 
 (defn sync-view
   "Bring font, layout context and layout up to date with the renderer's
@@ -117,9 +144,10 @@
         app (if (= density (:density app))
               app
               (do (release-view! app)
-                  (assoc app :density density
-                             :font (ct/font (:family app) (* (:font-size app) density))
-                             :ctx nil)))
+                  (let [app (assoc app :density density
+                                       :font (ct/font (:family app) (* (:font-size app) density))
+                                       :ctx nil)]
+                    (assoc app :status (status-view app)))))
         [w _ :as size] (sdl/render-output-size (:renderer app))
         wrap (max 1 (- w (* 2 (px app (:margin app)))))
         app (if (= wrap (get-in app [:ctx :width]))
@@ -134,7 +162,15 @@
       (assoc app :layout (layout/layout (:ctx app) (display-text app))
                  :laid-out shown :dirty? true))))
 
-(defn- view-height [app] (- (second (:size app)) (* 2 (px app (:margin app)))))
+(defn- status-height [app]
+  (+ (get-in app [:status :metrics :line-height]) (* 2 (px app (:status-padding app)))))
+
+(defn- text-height
+  "The height above the status bar: the text, its margins and the scroll bar."
+  [app]
+  (- (second (:size app)) (status-height app)))
+
+(defn- view-height [app] (- (text-height app) (* 2 (px app (:margin app)))))
 
 (defn- content-height [app]
   (let [L (:layout app)] (* (layout/line-count L) (layout/line-height L))))
@@ -161,7 +197,8 @@
   [app]
   (let [ms (max-scroll app)]
     (when (pos? ms)
-      (let [[w h] (:size app)
+      (let [[w] (:size app)
+            h       (text-height app)
             inset   (px app 2)
             track   (- h (* 2 inset))
             thumb-h (min track (max (px app (:thumb-min app))
@@ -199,7 +236,8 @@
 
 (defn create
   "A new, empty editor drawing with `:renderer`. Options (all but :renderer
-  optional): :density-fn, :clipboard-fn, :now, and any key of `defaults`.
+  optional): :density-fn, :clipboard-fn, :now, :mode (:normal unless
+  given), and any key of `defaults`.
   Release it with `destroy!`."
   [{:keys [now] :or {now 0} :as opts}]
   (settle (merge defaults
@@ -207,8 +245,10 @@
                   :clipboard-fn (constantly "")
                   :set-clipboard-fn (fn [_])
                   :textures     (textures/cache)
+                  :status-textures (textures/cache)
                   :scratch      {:frect (ffi/alloc sdl/frect) :irect (ffi/alloc sdl/rect)}
                   :doc          ed/empty-doc
+                  :mode         :normal
                   :scroll       0
                   :focused?     true
                   :blink-from   now
@@ -226,8 +266,17 @@
   [app now]
   (assoc app :follow? true :dirty? true :blink-from now))
 
-(defn- edit [app now f & args]
-  (-> app (assoc :doc (apply f (:doc app) args) :goal-x nil :upstream? false) (touched now)))
+(defn- insert? [app] (= :insert (:mode app)))
+
+(defn- edit
+  "Apply `f` to the document; normal mode leaves it alone."
+  [app now f & args]
+  (if (insert? app)
+    (-> app (assoc :doc (apply f (:doc app) args) :goal-x nil :upstream? false) (touched now))
+    app))
+
+(defn- enter-mode [app now mode]
+  (assoc app :mode mode :dirty? true :blink-from now))
 
 (defn- move-to
   "Move the caret to `pos`, or with `extend?` extend the selection to it."
@@ -286,6 +335,7 @@
                        (move-on-line app now shift? k (layout/line-end L k)))
         page (max 1 (quot (view-height app) (layout/line-height L)))]
     (condp = key
+      sdl/K-ESCAPE    (if (insert? app) (enter-mode app now :normal) app)
       sdl/K-BACKSPACE (cond sel        (edit app now ed/delete (first sel) (second sel))
                             cmd?       (edit app now ed/delete (layout/line-start L (line-of caret)) caret)
                             (pos? caret) (edit app now ed/delete (layout/prev-position L caret) caret)
@@ -309,7 +359,7 @@
       sdl/K-PAGEDOWN  (move-lines app now shift? fwd page)
       sdl/K-A         (if cmd? (-> app (assoc :doc (ed/select-all doc) :goal-x nil) (touched now)) app)
       sdl/K-C         (do (when cmd? (copy! app)) app)
-      sdl/K-X         (if (and cmd? sel)
+      sdl/K-X         (if (and cmd? sel (insert? app))
                         (do (copy! app) (edit app now ed/delete (first sel) (second sel)))
                         app)
       sdl/K-V         (if cmd?
@@ -425,6 +475,15 @@
                  {:text text :cursor (if (and cursor (<= 0 cursor n)) cursor n)})))
       (touched now)))
 
+(defn- on-text
+  "Typed text: inserted in insert mode, a command in normal mode."
+  [app now text]
+  ;; Commands are read from text, not keys: the `i` key is followed by its
+  ;; text, which would otherwise be typed into the insert mode it began.
+  (cond (insert? app) (edit (dissoc app :composition) now ed/insert text)
+        (= text "i")  (enter-mode app now :insert)
+        :else         app))
+
 (defn handle
   "The app after `event` (see the ns doc) at time `now` (ms)."
   [app event now]
@@ -432,8 +491,9 @@
         composing? (some? (:composition app))]
     (case (:type event)
       :quit   (assoc app :quit? true)
-      :text   (edit (dissoc app :composition) now ed/insert (:text event))
-      :composition (compose app now (:text event) (:cursor event))
+      :text   (on-text app now (:text event))
+      ;; Normal mode has no use for the input method's marked text.
+      :composition (if (insert? app) (compose app now (:text event) (:cursor event)) app)
       ;; While composing, keys and clicks belong to the input method, and the
       ;; layout shows the composition, so its positions aren't the document's.
       :key    (if composing? app (on-key app now (:key event) (:mod event 0)))
@@ -457,17 +517,32 @@
 
 ;; ---------------------------------------------------------------- drawing
 
+(defn- block-extent
+  "The block caret's [x0 x1]: over the character after the caret, or half
+  an em wide where there is none on its line (at a line's end)."
+  [app x k]
+  (let [L    (:layout app)
+        pos  (view-caret app)
+        next (layout/next-position L pos)
+        [x1 k1] (layout/caret L next true)]
+    (if (and (< pos next) (= k k1) (not= x x1))
+      [(min x x1) (max x x1)]
+      [x (+ x (px app (/ (:font-size app) 2)))])))
+
 (defn caret-rect
-  "The caret's [x y w h] in render pixels."
+  "The caret's [x y w h] in render pixels: a bar in insert mode, a block in
+  normal mode."
   [app]
   (let [{:keys [layout scroll]} app
         {:keys [line-height caret-top caret-height]} (:metrics layout)
         m (px app (:margin app))
-        [x k] (caret-place app)]
-    [(+ m (long (Math/floor x)))
-     (+ m (- (* k line-height) scroll) caret-top)
-     (max 1 (px app 1))
-     caret-height]))
+        [x k] (caret-place app)
+        y (+ m (- (* k line-height) scroll) caret-top)]
+    (if (insert? app)
+      [(+ m (long (Math/floor x))) y (max 1 (px app 1)) caret-height]
+      (let [[x0 x1] (block-extent app x k)
+            x0 (long (Math/floor x0))]
+        [(+ m x0) y (max 1 (- (long (Math/ceil x1)) x0)) caret-height]))))
 
 (defn- caret-in-view? [app]
   (let [[_ y _ h] (caret-rect app)
@@ -514,9 +589,61 @@
           [r g b] (if active? (:scrollbar-thumb-active app) (:scrollbar-thumb app))]
       (when active?
         (sdl/set-render-draw-color renderer tr tg tb 255)
-        (sdl/render-fill-rect renderer (sdl/set-frect! frect x 0 w (second (:size app)))))
+        (sdl/render-fill-rect renderer (sdl/set-frect! frect x 0 w (text-height app))))
       (sdl/set-render-draw-color renderer r g b 255)
       (sdl/render-fill-rect renderer (sdl/set-frect! frect tx thumb-y tw thumb-h)))))
+
+(defn- draw-block-caret!
+  "The block caret: solid foreground, with the text under it redrawn in the
+  background colour so it reads inverted. The line's texture is in the
+  foreground colour, so colour-modulating it by background/foreground per
+  channel gives the background."
+  [app]
+  (let [{:keys [renderer textures scratch layout scroll]} app
+        {:keys [frect irect]} scratch
+        {:keys [line-height baseline]} (:metrics layout)
+        m  (px app (:margin app))
+        [x y w h] (caret-rect app)
+        [fr fg fb :as fore] (:foreground app)
+        [_ k] (caret-place app)
+        {:keys [line text]} (layout/visual-line layout k)
+        ;; the part of the block in view; the text area's clip hides the rest
+        top (max y m)
+        bottom (min (+ y h) (+ m (view-height app)))]
+    (sdl/set-render-draw-color renderer fr fg fb 255)
+    (sdl/render-fill-rect renderer (sdl/set-frect! frect x y w h))
+    (when (and (not (str/blank? text)) (< top bottom))
+      (let [{:keys [texture width height pad] base :baseline}
+            (textures/fetch! textures renderer text line fore)
+            [r g b] (map (fn [b f] (min 255 (long (Math/round (* 255.0 (/ b (max 1 f)))))))
+                         (:background app) fore)]
+        (sdl/set-render-clip-rect renderer (sdl/set-rect! irect x top w (- bottom top)))
+        (sdl/set-texture-color-mod texture r g b)
+        (sdl/render-texture renderer texture ffi/null
+                            (sdl/set-frect! frect (- m pad)
+                                            (+ m (- (* k line-height) scroll) (- baseline base))
+                                            width height))
+        (sdl/set-texture-color-mod texture 255 255 255)))))
+
+(defn- draw-status-bar!
+  "The bar along the bottom, naming the mode."
+  [app]
+  (let [{:keys [renderer scratch status status-textures]} app
+        frect (:frect scratch)
+        [w] (:size app)
+        top (text-height app)
+        [r g b] (:status-background app)
+        text (mode-labels (:mode app))
+        {:keys [line]} (first (:lines (get-in status [:labels (:mode app)])))
+        {:keys [texture width height pad] base :baseline}
+        (textures/fetch! status-textures renderer text line (:status-foreground app))]
+    (sdl/set-render-draw-color renderer r g b 255)
+    (sdl/render-fill-rect renderer (sdl/set-frect! frect 0 top w (status-height app)))
+    (sdl/render-texture renderer texture ffi/null
+                        (sdl/set-frect! frect (- (px app (:margin app)) pad)
+                                        (+ top (px app (:status-padding app))
+                                           (get-in status [:metrics :baseline]) (- base))
+                                        width height))))
 
 (defn draw!
   "Render the app at time `now` (ms), present it, and return the app."
@@ -564,11 +691,14 @@
                                                 (- (long (Math/ceil x1)) (long (Math/floor x0)))
                                                 thickness)))))
     (when caret?
-      (let [[x y cw ch] (caret-rect app)]
-        (sdl/set-render-draw-color renderer fr fg fb 255)
-        (sdl/render-fill-rect renderer (sdl/set-frect! frect x y cw ch))))
+      (if (insert? app)
+        (let [[x y cw ch] (caret-rect app)]
+          (sdl/set-render-draw-color renderer fr fg fb 255)
+          (sdl/render-fill-rect renderer (sdl/set-frect! frect x y cw ch)))
+        (draw-block-caret! app)))
     (sdl/set-render-clip-rect renderer ffi/null)
     (draw-scrollbar! app)
+    (draw-status-bar! app)
     (sdl/render-present renderer)
     (textures/end-frame! textures)
     (assoc app :dirty? false :drawn-phase caret?)))

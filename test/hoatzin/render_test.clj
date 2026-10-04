@@ -115,3 +115,20 @@
     (t/send! s {:type :wheel :dy 5})
     (t/send! s {:type :move :x 790.0 :y 300.0})
     (t/matches-golden? "scrolled-selection-and-hovered-scrollbar" (t/render! s))))
+
+(deftest ^:integration normal-mode
+  ;; a fresh editor: an empty block caret, NORMAL in the status bar
+  (with-session [s :mode nil]
+    (t/matches-golden? "normal-mode-empty" (t/render! s))))
+
+(deftest ^:integration block-caret
+  ;; the block covers the character after the caret, which shows through
+  ;; inverted, and sits past the end of a line where there is none
+  (with-session [s]
+    (t/type! s hoatzin-text)
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-UP cmd)
+    (dotimes [_ 4] (t/press! s sdl/K-RIGHT))
+    (t/matches-golden? "block-caret" (t/render! s))
+    (t/press! s sdl/K-END)
+    (t/matches-golden? "block-caret-at-a-line-end" (t/render! s))))

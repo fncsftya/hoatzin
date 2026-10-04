@@ -662,3 +662,66 @@
     (is (= -1 (app/ms-until-wake (t/app s) 0)) "scrolled away, nothing to wake for")
     (t/render! s)
     (is (not (app/needs-draw? (t/app s) 530)) "nor to redraw")))
+
+;; ---------------------------------------------------------------- modes
+
+(defn- press-i!
+  "The i key as SDL reports it: the key, then its text."
+  [s]
+  (t/send! s {:type :key :key 0x69 :mod 0} {:type :text :text "i"}))
+
+(deftest starts-in-normal-mode
+  (with-session [s :mode nil]
+    (is (= :normal (:mode (t/app s))))))
+
+(deftest normal-mode-leaves-the-text-alone
+  (with-session [s]
+    (t/type! s "one\ntwo")
+    (t/press! s sdl/K-ESCAPE)
+    (is (= :normal (:mode (t/app s))))
+    (t/type! s "xyz")
+    (t/press! s sdl/K-BACKSPACE)
+    (t/press! s sdl/K-DELETE)
+    (t/press! s sdl/K-RETURN)
+    (t/compose! s "´" 1)
+    (t/set-clipboard! s "pasted")
+    (t/press! s sdl/K-V cmd)
+    (is (= {:text "one\ntwo" :caret 7} (t/doc s)))
+    (is (nil? (:composition (t/app s))))
+    (t/press! s sdl/K-A cmd)
+    (t/press! s sdl/K-X cmd)
+    (is (= "one\ntwo" (t/text s)) "cut copies but does not delete")
+    (t/press! s sdl/K-UP)
+    (t/press! s sdl/K-LEFT)
+    (is (= 0 (t/caret s)) "but the caret still moves")))
+
+(deftest i-and-escape-switch-modes
+  (with-session [s :mode :normal]
+    (press-i! s)
+    (is (= :insert (:mode (t/app s))))
+    (is (= "" (t/text s)) "the i that switched modes is not typed")
+    (press-i! s)
+    (is (= "i" (t/text s)) "in insert mode, i is typed")
+    (t/press! s sdl/K-ESCAPE)
+    (is (= :normal (:mode (t/app s))))
+    (t/press! s sdl/K-ESCAPE)
+    (is (= :normal (:mode (t/app s))) "escape in normal mode stays there")))
+
+(deftest the-caret-is-a-block-in-normal-mode
+  (with-session [s]
+    (t/type! s "wide")
+    (t/press! s sdl/K-UP cmd)
+    (let [bar (app/caret-rect (t/app s))]
+      (t/press! s sdl/K-ESCAPE)
+      (let [[x y w h] (app/caret-rect (t/app s))
+            L (:layout (t/app s))]
+        (is (= [(first bar) y h] [x (second bar) (nth bar 3)]))
+        (is (= w (long (Math/ceil (first (layout/caret L 1))))) "as wide as the w")
+        (t/press! s sdl/K-END)
+        (is (pos? (nth (app/caret-rect (t/app s)) 2)) "and still there at the end")))))
+
+(deftest switching-modes-redraws
+  (with-session [s]
+    (t/render! s)
+    (t/press! s sdl/K-ESCAPE)
+    (is (app/needs-draw? (t/app s) 0))))

@@ -149,18 +149,21 @@
 ;; ---------------------------------------------------------------- sessions
 
 (defn session
-  "A headless editor, `width` x `height` points at `density`. A mutable map
-  in an atom: {:app :canvas :now :clipboard}; the editor reads and writes
+  "A headless editor, `width` x `height` points at `density`, starting in
+  `mode`: :insert unless given, so tests can type straight away, and nil
+  for the editor's own default. A mutable
+  map in an atom: {:app :canvas :now :clipboard}; the editor reads and writes
   :clipboard. Close with `close!`."
-  [& {:keys [width height density clipboard]
-      :or   {width 400 height 300 density 2.0 clipboard ""}}]
+  [& {:keys [width height density clipboard mode]
+      :or   {width 400 height 300 density 2.0 clipboard "" mode :insert}}]
   (let [c (canvas (long (* width density)) (long (* height density)))
         s (atom {:canvas c :now 0 :clipboard clipboard :density density})]
-    (swap! s assoc :app (app/create {:renderer     (:renderer c)
-                                     :density-fn   (constantly (double density))
-                                     :clipboard-fn #(:clipboard @s)
-                                     :set-clipboard-fn #(swap! s assoc :clipboard %)
-                                     :now          0}))
+    (swap! s assoc :app (app/create (cond-> {:renderer     (:renderer c)
+                                             :density-fn   (constantly (double density))
+                                             :clipboard-fn #(:clipboard @s)
+                                             :set-clipboard-fn #(swap! s assoc :clipboard %)
+                                             :now          0}
+                                      mode (assoc :mode mode))))
     s))
 
 (defn close! [s]

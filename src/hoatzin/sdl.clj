@@ -27,6 +27,7 @@
 (def K-RETURN    0x0d)
 (def K-BACKSPACE 0x08)
 (def K-DELETE    0x7f)
+(def K-ESCAPE    0x1b)
 (def K-A         0x61)
 (def K-C         0x63)
 (def K-V         0x76)
@@ -116,6 +117,8 @@
 (ffi/defcfn destroy-texture "SDL_DestroyTexture" [:pointer] :void)
 (ffi/defcfn update-texture  "SDL_UpdateTexture"  [:pointer :pointer :pointer :int] :bool)
 (ffi/defcfn set-texture-blend-mode "SDL_SetTextureBlendMode" [:pointer :uint] :bool)
+(ffi/defcfn set-texture-color-mod "SDL_SetTextureColorMod"
+  [:pointer :uint8 :uint8 :uint8] :bool)
 (ffi/defcfn render-texture "SDL_RenderTexture" [:pointer :pointer :pointer :pointer] :bool)
 
 ;; Offscreen rendering and image files (used by the tests).
