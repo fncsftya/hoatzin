@@ -2,7 +2,7 @@
   "Golden-image tests: render headlessly and diff against test/golden.
   See hoatzin.test-support for regenerating goldens."
   (:require [clojure.string :as str]
-            [clojure.test :refer [deftest]]
+            [clojure.test :refer [deftest is]]
             [hoatzin.app :as app]
             [hoatzin.app.dropdown :as dropdown]
             [hoatzin.lib.sdl :as sdl]
@@ -460,3 +460,64 @@
     (t/press! s sdl/K-UP)
     (t/press! s sdl/K-UP)
     (t/matches-golden? "auk-before-a-section" (t/render! s))))
+
+;; ---------------------------------------------------------------- auk export
+
+(def ^:private export-sample
+  (str "{:content\n [{:type :section :ref 1}\n  \"then we have:\"\n"
+       "  {:type :list :content [{:text \"a list\"} {:type :list :content [{:text \"with a sublist\"}]}]}\n"
+       "  \"and more text \"\n  {:type :section :ref 2}\n  \"\"\n  \"\"]\n :sections\n"
+       " [{:id 1 :title \"header\" :content [\"first section\"]}\n"
+       "  {:id 2 :title \"footer\" :content [\"then a section to finish\"]}]}\n"))
+
+(deftest ^:integration auk-export-hints
+  (with-session [s :mode :normal :height 300]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk" :text export-sample})
+    (t/type! s "e")
+    (t/matches-golden? "auk-export-hints" (t/render! s))))
+
+(deftest auk-export
+  (with-session [s :mode :normal]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk" :text export-sample})
+    (t/type! s "e")
+    (t/type! s "1")
+    (is (= (str "> **header**\n>\n> first section\n\nthen we have:\n\n"
+                "* a list\n  * with a sublist\n\nand more text\n\n"
+                "> **footer**\n>\n> then a section to finish\n")
+           (get-in @s [:files "/notes/hoatzin.md"])))
+    (t/type! s "e")
+    (t/type! s "2")
+    (is (= (str "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+                "  <meta charset=\"utf-8\">\n"
+                "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+                "  <title>hoatzin</title>\n</head>\n<body>\n"
+                "  <section>\n    <h2>header</h2>\n    <p>first section</p>\n  </section>\n"
+                "  <p>then we have:</p>\n  <ul>\n    <li>a list\n      <ul>\n"
+                "        <li>with a sublist</li>\n      </ul>\n    </li>\n  </ul>\n"
+                "  <p>and more text</p>\n"
+                "  <section>\n    <h2>footer</h2>\n    <p>then a section to finish</p>\n  </section>\n"
+                "</body>\n</html>\n")
+           (get-in @s [:files "/notes/hoatzin.html"])))))
+
+(deftest auk-export-checklists-and-rules
+  (with-session [s :mode :normal]
+    (t/send! s {:type :opened :path "/notes/a.auk"
+                :text (pr-str {:content [{:type :checklist :content [{:text "done" :checked? true} {:text "todo"}]}
+                                         {:type :hr} "end"]})})
+    (t/type! s "e")
+    (t/type! s "1")
+    (is (= "- [x] done\n- [ ] todo\n\n---\n\nend\n" (get-in @s [:files "/notes/a.md"])))
+    (t/type! s "e")
+    (t/type! s "2")
+    (is (str/includes? (get-in @s [:files "/notes/a.html"])
+                       (str "<li><input type=\"checkbox\" checked onclick=\"return false;\"> done</li>\n"
+                            "    <li><input type=\"checkbox\" onclick=\"return false;\"> todo</li>")))
+    (is (str/includes? (get-in @s [:files "/notes/a.html"]) "<hr>"))))
+
+(deftest auk-export-cancelled
+  (with-session [s :mode :normal]
+    (t/send! s {:type :opened :path "/notes/a.auk" :text "{:content [\"x\"]}"})
+    (t/type! s "e")
+    (t/type! s "3")
+    (is (nil? (:choose (t/app s))))
+    (is (empty? (:files @s)))))

@@ -76,6 +76,7 @@
   resources/modes; the host may give more, from the user's config."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [hoatzin.app.choose :as choose]
             [hoatzin.app.confirm :as confirm]
             [hoatzin.app.insets :as insets]
             [hoatzin.app.state :as state]
@@ -177,6 +178,36 @@
   [app prompt yes]
   (confirm/ask app prompt (guarded yes)))
 
+(defn- choose
+  "Ask for one of `options`, strings, by number in a box above the status
+  bar: the one chosen, and the app, go to (`chosen` app now option)."
+  [app options chosen]
+  (choose/ask app options (guarded chosen)))
+
+(defn- doc
+  "The current buffer's text with its insets, as :write has it."
+  [app]
+  {:text (text app) :insets (insets/snapshot app)})
+
+(defn- write-beside
+  "Write string `s` to a file beside the current buffer's, named as it is
+  but with extension `ext` (\"md\") in place of its own, and say so."
+  [app ext s]
+  (if-let [path (:path app)]
+    (let [file (str (str/replace path #"\.[^./]*$" "") "." ext)
+          name (last (str/split file #"/"))]
+      (message app (if-let [error ((:write-file-fn app) file s)]
+                     (str "Can't write " name ": " error)
+                     (str "Exported \"" name "\""))))
+    (message app "Save the file before exporting it")))
+
+(defn- file-title
+  "The current buffer's file's name without its extension, or \"Untitled\"."
+  [app]
+  (if-let [path (:path app)]
+    (str/replace (last (str/split path #"/")) #"\.[^.]*$" "")
+    "Untitled"))
+
 (def ^:private api
   "What modes may use of the editor, as the namespace hoatzin.mode."
   {'text          (sci/copy-var text api-ns)
@@ -192,7 +223,11 @@
    'cycle-indent  (sci/copy-var cycle-indent api-ns)
    'list-return   (sci/copy-var list-return api-ns)
    'leave-inset   (sci/copy-var leave-inset api-ns)
-   'confirm       (sci/copy-var ask api-ns)})
+   'confirm       (sci/copy-var ask api-ns)
+   'choose        (sci/copy-var choose api-ns)
+   'doc           (sci/copy-var doc api-ns)
+   'file-title    (sci/copy-var file-title api-ns)
+   'write-beside  (sci/copy-var write-beside api-ns)})
 
 (defn- context [] (sci/init {:namespaces {'hoatzin.mode api}}))
 

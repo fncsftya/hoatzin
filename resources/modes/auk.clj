@@ -43,6 +43,8 @@
                 makes one above the line the caret is in; nothing is
                 different on a line that is in neither
     k           delete forwards, as the editor does, but not a section
+    e           export the note, as markdown or html, to a file beside
+                this one: choose the format by its number
     tab         in a list, indent the item, then take it out to the list
                 holding its list, then put it back where it was
   and in insert mode, cmd+l and cmd+ctrl+l make a list and a checklist,
@@ -232,6 +234,139 @@
                 "]"))
          "}\n")))
 
+;; ---------------------------------------------------------------- exporting
+
+(defn- blocks
+  "The parts of `doc`, in order: a vector of lines for each paragraph (a
+  run of lines that aren't blank), and each inset as it is."
+  [{:keys [text insets]}]
+  (let [below (group-by :after insets)
+        parts (concat (below -1)
+                      (mapcat (fn [i line] (cons line (below i)))
+                              (range) (str/split text #"\n" -1)))]
+    (:out
+     (reduce (fn [{:keys [out open?] :as acc} part]
+               (cond (not (string? part)) {:out (conj out part) :open? false}
+                     (str/blank? part)    (assoc acc :open? false)
+                     open?                {:out (conj (pop out) (conj (peek out) (str/trim part))) :open? true}
+                     :else                {:out (conj out [(str/trim part)]) :open? true}))
+             {:out [] :open? false}
+             parts))))
+
+(defn- items
+  "The parts of list or checklist `inset`, in order: [:item text checked?]
+  for each item, and the inset of each list below one."
+  [{:keys [kind text checked insets]}]
+  (let [below (group-by :after insets)]
+    (concat (map (fn [i] i) (below -1))
+            (mapcat (fn [k s] (cons [:item s (boolean (get checked k))] (below k)))
+                    (range) (str/split text #"\n" -1)))))
+
+(defn- md-list
+  "The lines of list or checklist `inset` in markdown, `level` lists deep."
+  [inset level]
+  (mapcat (fn [x]
+            (if (vector? x)
+              [(str (apply str (repeat (* 2 level) " "))
+                    (if (= :checklist (:kind inset)) (str "- [" (if (nth x 2) "x" " ") "] ") "* ")
+                    (second x))]
+              (md-list x (inc level))))
+          (items inset)))
+
+(defn- md-lines
+  "The lines of `doc` in markdown, a blank line between its blocks. Its
+  lines start with `q`, or with `blank` if they are blank: those of a
+  section are quoted. The sections below it are indented `nest` and one
+  level more than that, for those below them."
+  [doc q blank nest]
+  (let [piece (fn [block]
+                (cond
+                  (vector? block) (map-indexed (fn [i l] (str q l (when (< i (dec (count block))) "  "))) block)
+                  :else
+                  (case (:kind block)
+                    :rule [(str q "---")]
+                    (:list :checklist) (map #(str q %) (md-list block 0))
+                    (let [n (str nest "> ")]
+                               (md-lines (cond-> block
+                                           (:title block) (update :text #(str "**" (:title block) "**\n\n" %)))
+                                         n (str nest ">") (str nest "    "))))))]
+    (->> (blocks doc)
+         (map (comp vec piece))
+         (interpose [blank])
+         (apply concat))))
+
+(defn- export-markdown [app]
+  (str (str/join "\n" (md-lines (mode/doc app) "" "" "")) "\n"))
+
+(defn- escape-html [s]
+  (-> s (str/replace "&" "&amp;") (str/replace "<" "&lt;") (str/replace ">" "&gt;")))
+
+(defn- html-list
+  "The lines of list or checklist `inset` in HTML."
+  [inset]
+  (let [checklist? (= :checklist (:kind inset))
+        xs (vec (items inset))
+        ;; the lists below an item go in its <li>
+        groups (reduce (fn [gs x] (if (vector? x) (conj gs {:item x :lists []})
+                                      (if (seq gs)
+                                        (update gs (dec (count gs)) update :lists conj x)
+                                        (conj gs {:item nil :lists [x]}))))
+                       [] xs)]
+    (concat ["<ul>"]
+            (map #(str "  " %)
+            (mapcat (fn [{:keys [item lists]}]
+                      (let [open (str "<li>"
+                                      (when item
+                                        (str (when checklist?
+                                               (str "<input type=\"checkbox\""
+                                                    (when (nth item 2) " checked")
+                                                    " onclick=\"return false;\"> "))
+                                             (escape-html (second item)))))
+                            inner (mapcat (fn [l] (map #(str "  " %) (html-list l))) lists)]
+                        (if (seq inner)
+                          (concat [open] inner ["</li>"])
+                          [(str open "</li>")])))
+                    groups))
+            ["</ul>"])))
+
+(defn- html-lines
+  "The lines of `doc` in HTML; its sections below `depth` sections deep."
+  [doc depth]
+  (mapcat (fn [block]
+            (cond
+              (vector? block) [(str "<p>" (str/join "<br>\n" (map escape-html block)) "</p>")]
+              :else
+              (case (:kind block)
+                :rule ["<hr>"]
+                (:list :checklist) (html-list block)
+                (concat ["<section>"]
+                                 (when (:title block)
+                                   [(str "  <h" (min 6 (inc depth)) ">" (escape-html (:title block))
+                                         "</h" (min 6 (inc depth)) ">")])
+                                 (map #(str "  " %) (html-lines block (inc depth)))
+                                 ["</section>"]))))
+          (blocks doc)))
+
+(defn- export-html [app]
+  (str "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+       "  <meta charset=\"utf-8\">\n"
+       "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+       "  <title>" (escape-html (mode/file-title app)) "</title>\n</head>\n<body>\n"
+       (str/join "\n" (map #(str "  " %) (html-lines (mode/doc app) 1)))
+       "\n</body>\n</html>\n"))
+
+(def ^:private exporters
+  {"markdown" ["md" export-markdown]
+   "html"     ["html" export-html]})
+
+(defn- export
+  "Ask for a format, then write the note beside its file in it."
+  [app _]
+  (mode/choose app ["markdown" "html"]
+               (fn [app _ format]
+                 (let [[ext f] (exporters format)]
+                   (mode/write-beside app ext (f app))))))
+
 ;; ---------------------------------------------------------------- commands
 
 (defn- section-path
@@ -281,6 +416,7 @@
  :write       write-auk
  :inset-title "Section"
  :normal      {"cmd+s"  (add {})
+               "e"      export
                "cmd+shift+k" delete-inset
                "cmd+shift+o" (fn [app now] (mode/line-above app now))
                " "      fold
@@ -306,6 +442,7 @@
                  ["ctrl+l" "add a checklist (cmd+ctrl+l inserting)"]
                  ["h" "add a rule below the line"]
                  ["t" "tick or untick the checklist item"]
+                 ["e" "export as markdown or html"]
                  ["tab" "indent, outdent, restore a list item"]
                  ["return (twice)" "leave the list"]
                  ["shift+return" "new line after the lists, or the section"]

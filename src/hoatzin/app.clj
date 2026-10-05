@@ -136,6 +136,7 @@
             [hoatzin.app.buffers :as buffers]
             [hoatzin.app.caret :as caret]
             [hoatzin.app.command :as command]
+            [hoatzin.app.choose :as choose]
             [hoatzin.app.confirm :as confirm]
             [hoatzin.app.draw :as draw]
             [hoatzin.app.dropdown :as dropdown]
@@ -326,6 +327,7 @@
     (or
       (when (= :mode-data (:type event)) (modes/loaded app event))
       (when (:confirm app) (confirm/on-event app now event))
+      (when (:choose app) (choose/on-event app now event))
       (when (:renaming app) (rename/on-event app event))
       (modes/on-event app now event)
       (when (:list app) (dropdown/on-event app now event))

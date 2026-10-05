@@ -12,14 +12,13 @@
   (:require [clojure.string :as str]
             [hoatzin.app.buffers :as buffers]
             [hoatzin.app.buffers-window :as buffers-window]
-            [hoatzin.app.face :refer [ui-width]]
             [hoatzin.app.files :as files]
-            [hoatzin.app.geometry :refer [status-height]]
+            [hoatzin.app.hints :as hints]
             [hoatzin.app.insets :as insets]
             [hoatzin.app.modes :as modes]
             [hoatzin.app.search :as search]
             [hoatzin.app.settings-window :as settings-window]
-            [hoatzin.app.state :refer [px command? enter-mode touched]]
+            [hoatzin.app.state :refer [command? enter-mode touched]]
             [hoatzin.lib.editor :as ed]
             [hoatzin.lib.text :as text]
             [hoatzin.lib.sdl :as sdl]))
@@ -227,23 +226,6 @@
                             (assoc :dirty? true :blink-from now)))
       app)))
 
-;; ---------------------------------------------------------------- hints
-
-(def ^:private hint-gap "Points between the columns of command hints." 16)
-(def ^:private hint-padding "Points above and below the command hints." 4)
-(def ^:private hint-space "Points between the command hints and the status bar." 4)
-(def ^:private hint-rows "The most rows of command hints shown." 2)
-
-(defn- hint-columns
-  "`names` in columns, read down each and then across, filling no more
-  than `hint-rows` rows: on one row while they fit across `avail` pixels
-  in columns `col-w` wide and `gap` apart, else on as many columns as fit,
-  leaving out those that don't."
-  [names col-w gap avail]
-  (let [fit  (max 1 (quot (+ avail gap) (+ col-w gap)))
-        rows (if (<= (count names) fit) 1 hint-rows)]
-    (mapv vec (partition-all rows (take (* rows fit) names)))))
-
 (defn hints
   "While the command line is open, a float across the window just above
   the status bar, listing the commands that what is typed begins, or,
@@ -258,21 +240,6 @@
                   (arguments-beginning app (:command app))
                   (names-beginning app typed))]
       (when (seq names)
-        (let [d       (:density app)
-              [w]     (:size app)
-              m       (px app (:margin app))
-              col-w   (reduce max (map #(ui-width app %) names))
-              columns (hint-columns names col-w (px app hint-gap) (- w (* 2 m)))
-              label   (fn [name] {:kind :label :text name
-                                  :style {:color (:foreground app)}})]
-          ;; The side padding, with the border, is the margin: the names
-          ;; line up with the command line's text.
-          {:kind :box
-           :style {:position :absolute :left 0 :right 0
-                   :bottom (+ (/ (status-height app) d) hint-space)
-                   :direction :row :gap hint-gap :border 1
-                   :padding [hint-padding (- (:margin app) 1)]
-                   :background (:window-background app) :border-color (:ui-border app)}
-           :children (mapv (fn [col] {:kind :box :style {:width (/ col-w d)}
-                                      :children (mapv label col)})
-                           columns)})))))
+        (hints/box app (map (fn [name] {:text name :node {:kind :label :text name
+                                                          :style {:color (:foreground app)}}})
+                            names))))))

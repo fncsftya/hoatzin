@@ -9,6 +9,7 @@
             [hoatzin.app.dropdown :as dropdown]
             [hoatzin.app.geometry :as geo]
             [hoatzin.app.help-window :as help-window]
+            [hoatzin.app.hints :as hints]
             [hoatzin.app.insets :as insets]
             [hoatzin.app.theme :as theme]
             [hoatzin.lib.editor :as ed]
@@ -2553,9 +2554,9 @@
       (t/type! s ":")
       (is (= [["buffers" "cd"] ["close" "minor"]] (hints s)))))
   (testing "no more than two rows: the columns that don't fit are left out"
-    (is (= [["a" "b"] ["c" "d"]] (#'command/hint-columns ["a" "b" "c" "d" "e" "f"] 10 5 25)))
-    (is (= [["a"] ["b"] ["c"]] (#'command/hint-columns ["a" "b" "c"] 10 5 40)))
-    (is (= [["a" "b"]] (#'command/hint-columns ["a" "b" "c"] 10 5 1)) "always one column")))
+    (is (= [["a" "b"] ["c" "d"]] (#'hints/columns ["a" "b" "c" "d" "e" "f"] 10 5 25)))
+    (is (= [["a"] ["b"] ["c"]] (#'hints/columns ["a" "b" "c"] 10 5 40)))
+    (is (= [["a" "b"]] (#'hints/columns ["a" "b" "c"] 10 5 1)) "always one column")))
 
 (defn- settings-box
   "The settings window's placed box, or nil when it is closed."

@@ -3,6 +3,7 @@
   below a paragraph, and floats, above everything. Adding them, and where
   they are placed, and finding them there."
   (:require [hoatzin.app.buffers-window :as buffers-window]
+            [hoatzin.app.choose :as choose]
             [hoatzin.app.command :as command]
             [hoatzin.app.display :refer [shown-pos]]
             [hoatzin.app.face :refer [ui-context]]
@@ -99,7 +100,8 @@
                          (= :settings (:window app)) (conj (settings-window/window app))
                          (= :help (:window app))     (conj (help-window/window app))
                          (= :buffers (:window app))  (conj (buffers-window/window app))
-                         (command/hints app)         (conj (command/hints app))))]
+                         (command/hints app)         (conj (command/hints app))
+                         (:choose app)               (conj (choose/hints app))))]
     (let [[w h] (:size app)]
       (subvec (ui/place (ui-context app)
                         {:kind :box :style {:align :start} :children (vec floats)}
