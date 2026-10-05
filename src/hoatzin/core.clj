@@ -123,6 +123,9 @@
   [window latest dialogs ev irect cursors]
   (let [renderer (:renderer @latest)
         step (fn [app]
+               ;; a closed file dialog leaves the window without the focus
+               (when (= sdl/EVENT-USER (ffi/read ev :uint sdl/O-event-type))
+                 (sdl/raise-window window))
                (if-let [e (decode renderer dialogs ev)]
                  (app/handle app e (sdl/get-ticks))
                  app))]

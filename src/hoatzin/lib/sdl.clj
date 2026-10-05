@@ -93,6 +93,7 @@
 
 (ffi/defcfn create-window-and-renderer "SDL_CreateWindowAndRenderer"
   [:string :int :int :uint64 :pointer :pointer] :bool)
+(ffi/defcfn raise-window     "SDL_RaiseWindow"     [:pointer] :bool)
 (ffi/defcfn destroy-window   "SDL_DestroyWindow"   [:pointer] :void)
 (ffi/defcfn destroy-renderer "SDL_DestroyRenderer" [:pointer] :void)
 (ffi/defcfn get-window-pixel-density "SDL_GetWindowPixelDensity" [:pointer] :float)
