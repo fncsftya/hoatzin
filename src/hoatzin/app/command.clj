@@ -17,6 +17,7 @@
             [hoatzin.app.geometry :refer [status-height]]
             [hoatzin.app.insets :as insets]
             [hoatzin.app.modes :as modes]
+            [hoatzin.app.search :as search]
             [hoatzin.app.settings-window :as settings-window]
             [hoatzin.app.state :refer [px command? enter-mode touched]]
             [hoatzin.lib.editor :as ed]
@@ -25,9 +26,11 @@
 
 (defn line-text
   "The command line as shown: its text after the `:`, or after the prompt
-  for a line number."
+  for a line number, or the search prompt."
   [app]
-  (str (if (:goto? app) "Go to line: " ":") (:command app)))
+  (if (:search? app)
+    (search/prompt-text app)
+    (str (if (:goto? app) "Go to line: " ":") (:command app))))
 
 ;; ---------------------------------------------------------------- commands
 
@@ -97,7 +100,7 @@
   (assoc (open-line app now) :goto? true))
 
 (defn- leave-line [app now]
-  (-> app (enter-mode now :normal) (dissoc :command :goto?)))
+  (-> app (enter-mode now :normal) (dissoc :command :goto? :search?)))
 
 (defn- goto-line
   "Move the caret to the start of the 1-based line typed, clamped to the
@@ -173,13 +176,24 @@
       (if (seq names) (reduce shared-start names) command))))
 
 (defn on-text
-  "Typed text, onto the end of the command line."
+  "Typed text, onto the end of the command line (or the search prompt)."
   [app now text]
-  (let [text (if (:goto? app) (apply str (filter #(Character/isDigit ^char %) text)) text)]
-    (-> app (update :command str text) (assoc :dirty? true :blink-from now))))
+  (if (:search? app)
+    (search/on-text app now text)
+    (let [text (if (:goto? app) (apply str (filter #(Character/isDigit ^char %) text)) text)]
+    (-> app (update :command str text) (assoc :dirty? true :blink-from now)))))
+
+(declare on-command-key)
 
 (defn on-key
   "A key on the command line. Other keys leave the document alone."
+  [app now key]
+  (if (:search? app)
+    (search/on-key app now key)
+    (on-command-key app now key)))
+
+(defn- on-command-key
+  "A key on the command line."
   [app now key]
   (let [command (:command app)]
     (condp = key
@@ -218,7 +232,7 @@
   alphabetically, in line with the status bar's text; nil
   when it begins none."
   [app]
-  (when (and (command? app) (not (:goto? app)))
+  (when (and (command? app) (not (:goto? app)) (not (:search? app)))
     (let [[typed] (parse-command (:command app))
           ;; once there is an argument, the command is chosen
           names (if (argument-split (:command app))

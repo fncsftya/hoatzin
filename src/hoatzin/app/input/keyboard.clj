@@ -8,6 +8,7 @@
   In :insert mode typing edits the text, as does the input method's
   composition, and escape goes back to :normal."
   (:require [hoatzin.app.command :as command]
+            [hoatzin.app.search :as search]
             [hoatzin.app.geometry :refer [caret-or view-height]]
             [hoatzin.app.history :as history]
             [hoatzin.app.input.motion :refer [move-to move-on-line move-lines]]
@@ -242,6 +243,7 @@
       "w" (select-with app now ed/word-range)
       "s" (select-with app now ed/sentence-range)
       ":" (command/open-line app now)
+      "/" (search/open app now)
       "g" (command/open-goto app now)
       "u" (history/undo app now)
       "r" (history/redo app now)

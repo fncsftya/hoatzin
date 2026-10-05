@@ -71,7 +71,8 @@
                                     which it is in, and which there are
   Each buffer is in minor modes too, any number of them, which may add
   keys and commands as a mode does, and more; the editor's own is
-  variants (see hoatzin.app.variants), on to begin with.
+  variants (see hoatzin.app.variants), on to begin with, and search (see
+  hoatzin.app.search), which `/` turns on.
     :minor name                     turns minor mode `name` on in the
                                     buffer, or off; with no name, says
                                     which there are, and which are on
@@ -150,6 +151,7 @@
             [hoatzin.app.settings :as settings]
             [hoatzin.app.state :as state]
             [hoatzin.app.sync :as sync]
+            [hoatzin.app.search :as search]
             [hoatzin.app.variants :as variants]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.lib.textures :as textures]
@@ -198,7 +200,7 @@
                          :blink-from   now
                          :dirty?       true}
                         (dissoc opts :now :dir :mode-sources)
-                        {:modes   (merge {(:name variants/mode) variants/mode} modes)
+                        {:modes   (merge {(:name variants/mode) variants/mode (:name search/mode) search/mode} modes)
                          :message (some->> (seq (remove nil? (cons message errors)))
                                            (str/join "; "))})
                  dir))))

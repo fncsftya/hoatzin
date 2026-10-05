@@ -28,6 +28,7 @@
      ["u" "undo"]
      ["r" "redo (after undoing)"]
      ["g" "go to a line number"]
+     ["/" "search the text"]
      [":" "open the command line"]
      ["?" "show this help"]]]
    ["Moving (shift extends the selection)"

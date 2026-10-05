@@ -36,7 +36,7 @@
   "What the app holds of the current buffer, at its top level."
   [:buffer-id :buffer-name :scratch? :path :dir :doc :saved :modified? :compared
    :undo :undo-tail :undo-chain :scroll :goal-x :upstream? :blocks :major-mode
-   :minor-modes :insets :inset :before? :xsel :next-inset-id :saved-insets :variants :dims :next-variant-id
+   :minor-modes :minor-since :search :insets :inset :before? :xsel :next-inset-id :saved-insets :variants :dims :next-variant-id
    :tag :tag-color])
 
 (def ^:private passing-keys

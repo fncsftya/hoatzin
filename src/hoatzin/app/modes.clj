@@ -54,9 +54,10 @@
     :draw-under (fn [app k0 k1])      draw behind the text's visual lines
                                       [k0, k1)
     :draw       (fn [app k0 k1])      draw over them
-  A minor mode's keys and commands come before the buffer's mode's, and
-  one that answers nil leaves the key to the next. The editor's own minor
-  modes are hoatzin.app.variants.
+  A minor mode's keys and commands come before the buffer's mode's, those
+  of the one turned on last first, and one that answers nil leaves the
+  key to the next. The editor's own minor
+  modes are hoatzin.app.variants and hoatzin.app.search.
 
   A doc is the text with its insets (see
   hoatzin.app.insets): {:text s :insets [{:after k :text s :insets [...]}
@@ -234,9 +235,11 @@
   (some->> (:major-mode app) (get (:modes app))))
 
 (defn minors
-  "The minor modes the current buffer is in, by name."
+  "The minor modes the current buffer is in, the one turned on last
+  first, so that its keys come before those of the others."
   [app]
-  (keep #(get (:modes app) %) (sort (:minor-modes app))))
+  (keep #(get (:modes app) %)
+        (sort-by (juxt #(- (get (:minor-since app) % 0)) identity) (:minor-modes app))))
 
 (defn default-minors
   "The names of the minor modes a new buffer is in."
@@ -488,11 +491,12 @@
       (assoc app :message (str "No such minor mode: " name))
 
       (contains? (:minor-modes app) name)
-      (-> app (update :minor-modes disj name) (assoc :message (str (str/capitalize name) " mode off")))
+      (-> app (update :minor-modes disj name) (update :minor-since dissoc name) (assoc :message (str (str/capitalize name) " mode off")))
 
       :else
       (let [m   (get (:modes app) name)
             app (-> app (update :minor-modes (fnil conj #{}) name)
+                    (assoc-in [:minor-since name] (inc (reduce max 0 (vals (:minor-since app)))))
                     (assoc :message (str (str/capitalize name) " mode on")))]
         (if-let [f (and (:path app) (:opened m))] (f app) app)))))
 
