@@ -521,3 +521,11 @@
     (t/type! s "3")
     (is (nil? (:choose (t/app s))))
     (is (empty? (:files @s)))))
+
+(deftest auk-section-while-inserting
+  (with-session [s :mode :normal]
+    (t/send! s {:type :opened :path "/notes/a.auk" :text "{:content [\"x\"]}"})
+    (t/type! s "i")
+    (t/press! s sdl/K-S (bit-or cmd sdl/KMOD-CTRL))
+    (is (= 1 (count (:insets (t/app s)))))
+    (is (= :insert (:mode (t/app s))))))

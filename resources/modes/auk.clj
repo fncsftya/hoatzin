@@ -47,7 +47,7 @@
                 this one: choose the format by its number
     tab         in a list, indent the item, then take it out to the list
                 holding its list, then put it back where it was
-  and in insert mode, cmd+l and cmd+ctrl+l make a list and a checklist,
+  and in insert mode, cmd+ctrl+s makes a section, cmd+l and cmd+ctrl+l a list and a checklist,
   tab is as in normal mode, return on an empty last item of a list leaves
   it for a new line after it, and in either mode shift+return leaves every
   list the caret is in, or else the section, for a new line after it, in
@@ -427,13 +427,14 @@
                "t"      tick
                "tab"    (fn [app now] (mode/cycle-indent app now))
                "shift+return" (fn [app now] (mode/leave-inset app now))}
- :insert      {"cmd+l"        (add {:kind :list})
+ :insert      {"cmd+ctrl+s"   (add {})
+               "cmd+l"        (add {:kind :list})
                "cmd+ctrl+l"   (add {:kind :checklist})
                "tab"          (fn [app now] (mode/cycle-indent app now))
                "return"       (fn [app now] (mode/list-return app now false))
                "shift+return" (fn [app now] (mode/leave-inset app now))}
  :help        [["Auk mode"
-                [["cmd+s" "add a section below the line"]
+                [["cmd+s" "add a section below the line (cmd+ctrl+s inserting)"]
                  ["cmd+shift+k" "delete section, list or rule"]
                  ["cmd+shift+o" "new line above the section or list"]
                  ["space" "fold or unfold the section"]
