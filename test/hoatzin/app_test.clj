@@ -1029,7 +1029,7 @@
       (is (= [m m] [x y]) "inset by the margin")
       (is (= (- sw m m) w) "the window's width")
       (is (< (+ y h) (- sh m)) "above the status bar"))
-    (is (= {:settings/editor-family (:editor-family (t/app s))
+    (is (= {:settings/editor-family "Georgia"
             :settings/editor-size   "20"
             :settings/ui-family     "Menlo"
             :settings/ui-size       "13"
@@ -1049,3 +1049,115 @@
     (is (nil? (settings-box s)) "escape closes it")
     (t/type! s "i")
     (is (= :insert (:mode (t/app s))) "and the keys reach the editor again")))
+
+(defn- field-point
+  "The middle of the settings window's field `id`, in render pixels."
+  [s id]
+  (let [{[x y w h] :rect} (some #(when (= id (get-in % [:node :id])) %) (:float-places (t/app s)))]
+    [(double (+ x (quot w 2))) (double (+ y (quot h 2)))]))
+
+(defn- click-field! [s id] (apply t/click! s (field-point s id)))
+
+(defn- shown
+  "What the settings window's field `id` shows: what was typed into it, or
+  else its setting."
+  [s id]
+  (get-in (t/app s) [:ui-values id] (get (settings-values s) id)))
+
+(deftest editing-font-sizes
+  (with-session [s :mode :normal]
+    (t/command! s "settings")
+    (click-field! s :settings/editor-family)
+    (is (nil? (:focus (t/app s))) "a read-only field takes no focus")
+    (click-field! s :settings/editor-size)
+    (is (= :settings/editor-size (:focus (t/app s))))
+    (is (app/caret-visible? (t/app s) (:now @s)) "the caret is in the field")
+    (testing "typing changes the setting, applies it and saves it"
+      (t/press! s sdl/K-BACKSPACE)
+      (t/press! s sdl/K-BACKSPACE)
+      (is (= 20 (get-in (t/app s) [:settings :editor-font :size]))
+          "an empty field is no size")
+      (is (nil? (:saved-settings @s)))
+      (t/type! s "2x4")
+      (is (= "24" (get-in (t/app s) [:ui-values :settings/editor-size])) "only digits")
+      (is (= 24 (get-in (t/app s) [:settings :editor-font :size])))
+      (is (= 24 (get-in @s [:saved-settings :editor-font :size])))
+      (is (= 20 (get-in (t/app s) [:fonts :editor-font :size]))
+          "the font waits for the setting to be left alone")
+      (is (= 150 (app/ms-until-wake (t/app s) (:now @s))) "and wakes up for it")
+      (t/advance! s 150)
+      (t/send! s {:type :tick})
+      (is (= {:editor-font {:family "Georgia" :size 24} :ui-font {:family "Menlo" :size 13}}
+             (:fonts (t/app s))) "then it is made again"))
+    (testing "up and down step, within the sizes allowed"
+      (t/press! s sdl/K-UP)
+      (is (= 25 (get-in (t/app s) [:settings :editor-font :size])))
+      (t/press! s sdl/K-DOWN)
+      (t/press! s sdl/K-DOWN)
+      (is (= 23 (get-in (t/app s) [:settings :editor-font :size])))
+      (t/type! s "0")
+      (is (= 23 (get-in (t/app s) [:settings :editor-font :size])) "230 is too big")
+      (t/press! s sdl/K-UP)
+      (is (= 72 (get-in (t/app s) [:settings :editor-font :size])) "kept to the largest"))
+    (testing "tab moves between the editable fields"
+      (t/press! s sdl/K-TAB)
+      (is (= :settings/ui-size (:focus (t/app s))))
+      (t/press! s sdl/K-TAB)
+      (is (= :settings/editor-size (:focus (t/app s))) "wrapping around")
+      (t/press! s sdl/K-TAB sdl/KMOD-SHIFT)
+      (is (= :settings/ui-size (:focus (t/app s)))))
+    (testing "given up, a field shows its setting, not what was typed"
+      (t/press! s sdl/K-BACKSPACE)
+      (is (= "1" (shown s :settings/ui-size)))
+      (t/press! s sdl/K-RETURN)
+      (is (nil? (:focus (t/app s))))
+      (is (= "13" (shown s :settings/ui-size))))
+    (testing "escape closes the window from a field"
+      (click-field! s :settings/ui-size)
+      (t/press! s sdl/K-ESCAPE)
+      (is (nil? (:window (t/app s))))
+      (is (nil? (:focus (t/app s))))
+      (t/type! s "i")
+      (is (= :insert (:mode (t/app s))) "the keys reach the editor again"))))
+
+(deftest a-setting-that-cannot-be-saved-says-so
+  (with-session [s :mode :normal]
+    (swap! s assoc :settings-error "Read-only file system")
+    (t/command! s "settings")
+    (click-field! s :settings/ui-size)
+    (t/press! s sdl/K-UP)
+    (is (= 14 (get-in (t/app s) [:settings :ui-font :size])) "it still applies")
+    (is (= "Can't save settings: Read-only file system" (:message (t/app s))))))
+
+(deftest settings-given-at-the-start
+  (with-session [s :mode :normal]
+    (let [a (app/settle (app/create {:renderer (:renderer (:canvas @s))
+                                     :settings {:editor-font {:family "Menlo" :size 30}
+                                                :ui-font {:family "Menlo" :size 13}}}))]
+      (try
+        (is (= 30 (get-in a [:fonts :editor-font :size])))
+        (finally (app/destroy! a))))))
+
+(deftest the-editor-font-applies-after-the-last-change
+  (with-session [s :mode :normal]
+    (t/command! s "settings")
+    (click-field! s :settings/editor-size)
+    (t/press! s sdl/K-UP)
+    (t/advance! s 100)
+    (t/press! s sdl/K-UP)
+    (t/advance! s 100)
+    (t/send! s {:type :tick})
+    (is (= 20 (get-in (t/app s) [:fonts :editor-font :size])) "each change starts the wait again")
+    (t/advance! s 50)
+    (t/send! s {:type :tick})
+    (is (= 22 (get-in (t/app s) [:fonts :editor-font :size])))))
+
+(deftest the-ui-font-leaves-the-text-laid-out
+  (with-session [s :mode :normal]
+    (t/command! s "settings")
+    (let [{:keys [ctx layout]} (t/app s)]
+      (click-field! s :settings/ui-size)
+      (t/press! s sdl/K-UP)
+      (is (= 14 (get-in (t/app s) [:fonts :ui-font :size])) "it applies straight away")
+      (is (identical? ctx (:ctx (t/app s))))
+      (is (identical? layout (:layout (t/app s)))))))

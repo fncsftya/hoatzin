@@ -152,6 +152,19 @@
     (swap! s update :app #(assoc % :doc (ed/move (:doc %) (inc mid)) :follow? true))
     (step! s [(text-ev "i")])))
 
+(defn- to-font-size!
+  "Put the caret on the middle line, then open the settings window with
+  the editor font size field focused."
+  [s]
+  (to-middle! s)
+  (step! s [(key-ev sdl/K-ESCAPE)])
+  (step! s (map (comp text-ev str) ":settings"))
+  (step! s [(key-ev sdl/K-RETURN)])
+  (let [{[x y w h] :rect} (some #(when (= :settings/editor-size (get-in % [:node :id])) %)
+                                (:float-places (t/app s)))]
+    (step! s [{:type :click :x (double (+ x (quot w 2))) :y (double (+ y (quot h 2)))}
+              {:type :release}])))
+
 (def ^:private docs
   {"lines"     (delay (prose 50000 70))   ; ~3.5 MB, 50k paragraphs
    "paragraph" (delay (prose 1 100000))}) ; one 100 KB paragraph
@@ -178,7 +191,19 @@
    {:name "compose lines" :doc "lines" :n 50 :setup to-middle!
     :run (fn [_ _ i] [{:type :composition :text (if (even? i) "´" "") :cursor 1}])}
    {:name "type paragraph" :doc "paragraph" :n 20 :setup to-middle!
-    :run (fn [_ _ _] [(text-ev "x")])}])
+    :run (fn [_ _ _] [(text-ev "x")])}
+   ;; the editor font size field, typed into and stepped, a new size each
+   ;; step, faster than the font applies them
+   {:name "type font-size lines" :doc "lines" :n 40 :setup to-font-size!
+    :run (fn [_ _ i] [(key-ev sdl/K-BACKSPACE) (text-ev (str (+ 1 (mod i 2))))])}
+   {:name "step font-size lines" :doc "lines" :n 40 :setup to-font-size!
+    :run (fn [_ _ i] [(key-ev (if (even? i) sdl/K-UP sdl/K-DOWN))])}
+   ;; and the font applying, once the size has been left alone
+   {:name "apply font-size lines" :doc "lines" :n 20 :setup to-font-size!
+    :run (fn [s _ i]
+           (t/send! s (key-ev (if (even? i) sdl/K-UP sdl/K-DOWN)))
+           (t/advance! s 1000)
+           [{:type :tick}])}])
 
 (def ^:private software? (atom true))
 

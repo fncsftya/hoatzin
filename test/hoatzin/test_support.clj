@@ -153,10 +153,12 @@
   `mode`: :insert unless given, so tests can type straight away, and nil
   for the editor's own default. A mutable
   map in an atom: {:app :canvas :now :clipboard :dialogs :save-dialogs
-  :files :write-error}; the editor reads and writes :clipboard, counts the
-  open dialogs it shows in :dialogs, records the paths the save dialogs it
-  shows start at in :save-dialogs, and writes into :files, a map of path
-  to text, unless there is a :write-error to fail with.
+  :files :write-error :saved-settings :settings-error}; the editor reads
+  and writes :clipboard, counts the open dialogs it shows in :dialogs,
+  records the paths the save dialogs it shows start at in :save-dialogs,
+  and writes into :files, a map of path to text, unless there is a
+  :write-error to fail with. It saves its settings into :saved-settings,
+  unless there is a :settings-error to fail with.
   Close with `close!`."
   [& {:keys [width height density clipboard mode]
       :or   {width 400 height 300 density 2.0 clipboard "" mode :insert}}]
@@ -173,6 +175,10 @@
                                              (fn [path text]
                                                (or (:write-error @s)
                                                    (do (swap! s assoc-in [:files path] text) nil)))
+                                             :save-settings-fn
+                                             (fn [settings]
+                                               (or (:settings-error @s)
+                                                   (do (swap! s assoc :saved-settings settings) nil)))
                                              :now          0}
                                       mode (assoc :mode mode))))
     s))

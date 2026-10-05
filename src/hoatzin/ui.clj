@@ -7,7 +7,12 @@
     {:kind :label :text s}                   text that can't be edited
     {:kind :field :id id :value s}           editable text; :value is its
                                              starting text, the app keeps
-                                             what it holds now by :id
+                                             what it holds now by :id. With
+                                             :readonly? it can't be edited;
+                                             with :input :integer, only
+                                             digits can be typed, and up and
+                                             down step it by one, within its
+                                             :min and :max (if any)
     {:kind :button :id id :text s}
     {:kind :checkbox :id id :value bool}
   Interactive nodes (fields, buttons, checkboxes) need an :id: the app keeps
@@ -54,6 +59,31 @@
 (defn style [node] (merge (kind-styles (:kind node)) (:style node)))
 
 (defn interactive? [node] (contains? #{:field :button :checkbox} (:kind node)))
+
+(defn editable?
+  "Whether `node` is a field that can be edited, and so take the focus."
+  [node]
+  (and (= :field (:kind node)) (not (:readonly? node))))
+
+;; ---------------------------------------------------------------- editing
+
+(defn typed
+  "What field `node`, holding `value`, holds after `text` is typed at its
+  end: an integer field takes only digits."
+  [node value text]
+  (let [text (if (= :integer (:input node)) (apply str (filter #(Character/isDigit %) text)) text)]
+    (str value text)))
+
+(defn stepped
+  "What integer field `node`, holding `value`, holds after stepping by
+  `delta`, kept within its :min and :max; nil if it isn't an integer field,
+  or `value` isn't an integer."
+  [node value delta]
+  (when (= :integer (:input node))
+    (when-let [n (parse-long (str value))]
+      (str (cond-> (+ n delta)
+             (:min node) (max (:min node))
+             (:max node) (min (:max node)))))))
 
 (defn- px ^long [ctx v] (long (Math/round (* (double v) (:scale ctx)))))
 

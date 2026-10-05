@@ -2,7 +2,8 @@
   "The desktop host: an SDL window whose events drive hoatzin.app."
   (:require [jolt.ffi :as ffi]
             [hoatzin.app :as app]
-            [hoatzin.sdl :as sdl]))
+            [hoatzin.sdl :as sdl]
+            [hoatzin.settings :as settings]))
 
 ;; ---------------------------------------------------------------- file dialogs
 
@@ -161,7 +162,9 @@
           cursors {:text  (sdl/create-system-cursor sdl/SYSTEM-CURSOR-TEXT)
                    :arrow (sdl/create-system-cursor sdl/SYSTEM-CURSOR-DEFAULT)}
           latest (atom nil)
-          dialogs (file-dialogs window)]
+          dialogs (file-dialogs window)
+          settings-file (settings/file)
+          {:keys [error] :as loaded} (settings/read-file settings-file)]
       (sdl/check! (sdl/start-text-input window) "SDL_StartTextInput")
       (try
         (reset! latest (app/create {:renderer     renderer
@@ -171,6 +174,9 @@
                                     :open-dialog-fn (:open! dialogs)
                                     :save-dialog-fn (:save! dialogs)
                                     :write-file-fn write-file
+                                    :settings     (:settings loaded)
+                                    :save-settings-fn #(settings/write-file! settings-file %)
+                                    :message      (when error (str "Can't read settings: " error))
                                     :now          (sdl/get-ticks)}))
         (with-open [a (ffi/confined-arena)]
           (run-loop window latest dialogs (ffi/alloc a sdl/EVENT-SIZE) (ffi/alloc a sdl/rect) cursors))

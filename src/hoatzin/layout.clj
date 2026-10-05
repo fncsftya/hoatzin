@@ -58,14 +58,35 @@
 
 ;; ---------------------------------------------------------------- paragraphs
 
-(defn- paragraphs-of
-  "Paragraphs for the strings `texts`, wrapped."
+(def ^:private parallel-chars
+  "Past this many characters, paragraphs are wrapped on several threads:
+  wrapping a whole large text, as a new font or width needs, is CoreText's
+  work, and its typesetters on different threads don't contend."
+  100000)
+
+(def ^:private threads (max 1 (.availableProcessors (Runtime/getRuntime))))
+
+(defn- wrapped
+  "Paragraphs for the strings `texts`, wrapped, on this thread."
   [font width texts]
   (mapv (fn [text {:keys [length lines]}]
           {:text text :length length :lines lines
            ;; UTF-16 is longer than the code points only past the BMP
            :u16 (when (not= length (count text)) (u16-table text))})
         texts (ct/wrap font texts width)))
+
+(defn- paragraphs-of
+  "Paragraphs for the strings `texts`, wrapped: many of them in runs of
+  about the same number, one run to a thread."
+  [font width texts]
+  (let [texts (vec texts)
+        n     (count texts)]
+    (if (or (< n (* 2 threads)) (< (reduce + 0 (map count texts)) parallel-chars))
+      (wrapped font width texts)
+      (let [per (quot (+ n threads -1) threads)]
+        (into [] (mapcat deref)
+              (mapv #(future (wrapped font width (subvec texts % (min n (+ % per)))))
+                    (range 0 n per)))))))
 
 (defn- edit-range
   "Where string `b` differs from `a`: [p ea eb], a's [p, ea) having become

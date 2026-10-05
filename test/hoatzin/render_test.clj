@@ -189,3 +189,30 @@
     (t/press! s sdl/K-ESCAPE)
     (t/command! s "settings")
     (t/matches-golden? "settings" (t/render! s))))
+
+(defn- click-field!
+  "Click the middle of the settings window's field `id`."
+  [s id]
+  (let [{[x y w h] :rect} (some #(when (= id (get-in % [:node :id])) %)
+                                (:float-places (t/app s)))]
+    (t/click! s (double (+ x (quot w 2))) (double (+ y (quot h 2))))))
+
+(deftest ^:integration settings-editing
+  ;; a font size field with the focus, being typed into; then the window
+  ;; closed on the sizes it set
+  (with-session [s]
+    (t/type! s hoatzin-text)
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "settings")
+    (click-field! s :settings/editor-size)
+    (t/press! s sdl/K-BACKSPACE)
+    (t/type! s "6")
+    (t/press! s sdl/K-TAB)
+    (t/press! s sdl/K-UP)
+    (t/press! s sdl/K-UP)
+    (t/press! s sdl/K-UP)
+    (t/matches-golden? "settings-editing" (t/render! s))
+    (t/press! s sdl/K-ESCAPE)
+    (t/advance! s 150)                  ; the editor font's wait
+    (t/send! s {:type :tick})
+    (t/matches-golden? "settings-applied" (t/render! s))))

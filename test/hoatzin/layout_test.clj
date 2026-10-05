@@ -276,3 +276,9 @@
             (is (= (str t2) (str/join "\n" (map :text (layout/paragraphs L)))))
             (recur (inc k) t2))))
       (finally (layout/release-context ctx)))))
+
+(deftest wrapping-many-paragraphs-on-several-threads
+  ;; enough text to be split between threads; the breaks are the same
+  (let [texts (vec (for [i (range 400)] (str/join " " (repeat (+ 20 (mod i 37)) "hoatzin café"))))]
+    (is (= (#'layout/wrapped *font* 500 texts)
+           (#'layout/paragraphs-of *font* 500 texts)))))

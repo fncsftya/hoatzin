@@ -7,8 +7,10 @@
   :clipboard-fn (read the clipboard), :set-clipboard-fn (write it),
   :open-dialog-fn (show a file dialog, whose file comes back as :opened),
   :save-dialog-fn (show a save dialog starting at the path it is given, or
-  nil; the choice comes back as :save-chosen) and :write-file-fn (write
-  string s to path p, returning nil, or why it could not).
+  nil; the choice comes back as :save-chosen), :write-file-fn (write
+  string s to path p, returning nil, or why it could not) and
+  :save-settings-fn (persist the settings, as hoatzin.settings has them,
+  returning nil, or why it could not).
   That is what lets tests drive the editor headlessly and deterministically.
 
   The editor is modal. In :normal mode the text is left alone: keys move the
@@ -29,6 +31,13 @@
                                     until escape closes it
 
   While a window is open, it takes the input: the text is left alone.
+
+  Clicking an editable field (see hoatzin.ui) gives it the focus: then
+  typing goes into it, backspace takes from its end, up and down step an
+  integer field, tab and shift-tab move to the next and previous field,
+  and return or a click elsewhere gives the focus up. In the settings
+  window, a field holding a valid setting changes it, which applies and
+  saves it straight away; given up, it shows the setting again.
 
   Events:
     {:type :text  :text s}          committed text input; in normal mode, a
@@ -64,18 +73,15 @@
             [hoatzin.editor :as ed]
             [hoatzin.layout :as layout]
             [hoatzin.sdl :as sdl]
+            [hoatzin.settings :as settings]
             [hoatzin.text :as text]
             [hoatzin.textures :as textures]
             [hoatzin.ui :as ui]))
 
 (def defaults
-  ;; Two fonts: the editor's, for the text, and the UI's, for everything
-  ;; else (the status bar, the command line and boxes).
-  {:editor-family ct/default-family
-   :editor-font-size 20        ; points; scaled by the pixel density
-   :ui-family   "Menlo"        ; monospace, and on every macOS install
-   :ui-font-size 13            ; points
-   :status-padding 4           ; points above and below the status bar's text
+  ;; The fonts are in :settings (see hoatzin.settings): the editor's, for
+  ;; the text, and the UI's, for everything else.
+  {:status-padding 4           ; points above and below the status bar's text
    :margin      24             ; points
    :blink-ms    530            ; the macOS caret blink period
    :wheel-lines 3
@@ -84,6 +90,9 @@
    :thumb-width-active 10
    :thumb-min   32             ; points: the shortest the thumb gets
    :autoscroll-ms 50           ; how often a drag held outside the text scrolls
+   :font-delay-ms 150          ; how long a changed editor font setting waits
+                               ; for the next change before it applies: each
+                               ; means wrapping the whole text again
    :background  [30 30 46]
    :foreground  [235 230 220]
    :selection   [76 84 128]
@@ -95,6 +104,7 @@
    :status-foreground [170 168 190]
    :ui-border   [96 98 128]    ; boxes' colours, where their style sets none
    :ui-accent   [128 132 158]
+   :ui-focus    [150 158 230]  ; the border of the field with the focus
    :ui-field-background [24 24 37]})
 
 (def mode-labels {:normal "NORMAL" :insert "INSERT"})
@@ -115,8 +125,14 @@
 ;;   :saved                                the text as it is in that file
 ;;   :modified? :compared                  whether the text differs from
 ;;                                         :saved, as of :compared [text saved]
+;;   :settings                             what the user can change: see
+;;                                         hoatzin.settings
 ;;   :density :font                        the editor font, at the current
 ;;                                         density
+;;   :fonts                                the :settings fonts :font and :ui
+;;                                         were made from
+;;   :fonts-at                             when (ms) the editor font setting,
+;;                                         just changed, is to be applied
 ;;   :ui :ui-textures                      the UI font's {:font :metrics
 ;;                                         :lines}, :lines an atom caching
 ;;                                         texts set as lines in it, and its
@@ -141,6 +157,8 @@
 ;;   :floats                               boxes above everything, placed in
 ;;                                         the window, last on top
 ;;   :ui-values                            interactive boxes' values, by :id
+;;   :focus                                the :id of the field with the
+;;                                         focus, or nil
 ;;   :block-places :float-places           where they are, as `place-blocks` and
 ;;                                         `place-floats` say; the floats placed
 ;;                                         include the command line's hints
@@ -257,12 +275,18 @@
         (cond-> (assoc app :compared [text saved] :modified? modified?)
           (not= modified? (:modified? app)) (assoc :dirty? true))))))
 
-(defn- release-view! [{:keys [ctx textures font ui ui-textures]}]
+(defn- release-editor-view! [{:keys [ctx textures font]}]
   (some-> ctx layout/release-context)
   (some-> textures textures/clear!)
-  (some-> font ct/release-font)
+  (some-> font ct/release-font))
+
+(defn- release-ui-view! [{:keys [ui ui-textures]}]
   (some-> ui-textures textures/clear!)
   (some-> ui release-face!))
+
+(defn- release-view! [app]
+  (release-editor-view! app)
+  (release-ui-view! app))
 
 (defn- ui-width
   "How wide `text` is in the UI font, in render pixels."
@@ -338,14 +362,27 @@
   trims the layout's cache."
   [app]
   (let [density (double ((:density-fn app)))
-        app (if (= density (:density app))
+        {:keys [editor-font ui-font]} (:settings app)
+        ;; While the editor font waits (see `fonts-at`), it stays as it is.
+        editor-font (if (:fonts-at app) (get-in app [:fonts :editor-font]) editor-font)
+        new-density? (not= density (:density app))
+        app (assoc app :density density)
+        ;; Each font is made again only when it, or the density, changes:
+        ;; the editor's means wrapping the whole text again.
+        app (if (and (not new-density?) (= editor-font (get-in app [:fonts :editor-font])))
               app
-              (do (release-view! app)
-                  (let [app (assoc app :density density
-                                       :font (ct/font (:editor-family app)
-                                                      (* (:editor-font-size app) density))
-                                       :ctx nil)]
-                    (assoc app :ui (face app (:ui-family app) (:ui-font-size app) ui-lines-kept)))))
+              (do (release-editor-view! app)
+                  (-> app
+                      (assoc :font (ct/font (:family editor-font) (* (:size editor-font) density))
+                             :ctx nil :dirty? true)
+                      (assoc-in [:fonts :editor-font] editor-font))))
+        app (if (and (not new-density?) (= ui-font (get-in app [:fonts :ui-font])))
+              app
+              (do (release-ui-view! app)
+                  (-> app
+                      (assoc :ui (face app (:family ui-font) (:size ui-font) ui-lines-kept)
+                             :dirty? true)
+                      (assoc-in [:fonts :ui-font] ui-font))))
         [w _ :as size] (sdl/render-output-size (:renderer app))
         wrap (max 1 (- w (* 2 (px app (:margin app)))))
         app (if (= wrap (get-in app [:ctx :width]))
@@ -461,8 +498,9 @@
 (defn create
   "A new, empty editor drawing with `:renderer`. Options (all but :renderer
   optional): :density-fn, :clipboard-fn, :set-clipboard-fn, :open-dialog-fn,
-  :save-dialog-fn, :write-file-fn, :now, :mode (:normal unless given), and
-  any key of `defaults`.
+  :save-dialog-fn, :write-file-fn, :save-settings-fn, :now, :settings (the
+  defaults unless given), :mode (:normal unless given), :message, and any
+  key of `defaults`.
   Release it with `destroy!`."
   [{:keys [now] :or {now 0} :as opts}]
   (settle (merge defaults
@@ -472,6 +510,8 @@
                   :open-dialog-fn (fn [])
                   :save-dialog-fn (fn [_])
                   :write-file-fn (fn [_ _] "no file system")
+                  :save-settings-fn (fn [_])
+                  :settings     settings/defaults
                   :textures     (textures/cache)
                   :ui-textures  (textures/cache)
                   :blocks       {}
@@ -683,14 +723,80 @@
           (some #(ui/hit (:placed %) (- x m) (+ (- y m) (:scroll app)))
                 (:block-places app))))))
 
-(defn- on-ui-click
-  "A click on a box: it doesn't reach the text. A checkbox toggles."
-  [app {:keys [node]}]
-  (case (:kind node)
-    :checkbox (-> app
-                  (assoc-in [:ui-values (:id node)] (not (ui-value app node)))
-                  (assoc :dirty? true))
+(defn- field-places
+  "Every editable field placed, in order (the floats', then the blocks'),
+  as hoatzin.ui/place gives them but in render pixels."
+  [app]
+  (let [m (px app (:margin app))]
+    (filterv #(ui/editable? (:node %))
+             (concat (:float-places app)
+                     (mapcat #(ui/offset (:placed %) m (- m (:scroll app))) (:block-places app))))))
+
+(defn- focused-field
+  "The field with the focus, as `field-places` has it, or nil."
+  [app]
+  (when-let [id (:focus app)]
+    (some #(when (= id (get-in % [:node :id])) %) (field-places app))))
+
+(def ^:private settings-fields
+  "The settings window's editable fields, by :id, and the setting each holds."
+  {:settings/editor-size [:editor-font :size]
+   :settings/ui-size     [:ui-font :size]})
+
+(defn- blur
+  "Give up the focus. A settings field shows its setting again, rather
+  than what was typed."
+  [app]
+  (if-let [id (:focus app)]
+    (cond-> (-> app (dissoc :focus) (assoc :dirty? true))
+      (settings-fields id) (update :ui-values dissoc id))
     app))
+
+(defn- focus [app now id]
+  (-> (if (= id (:focus app)) app (blur app))
+      (assoc :focus id :dirty? true :blink-from now)))
+
+(defn- next-field
+  "Move the focus `delta` fields on, wrapping around."
+  [app now delta]
+  (let [ids (mapv #(get-in % [:node :id]) (field-places app))
+        i   (or (first (keep-indexed #(when (= %2 (:focus app)) %1) ids)) 0)]
+    (focus app now (ids (mod (+ i delta) (count ids))))))
+
+(defn- change-setting
+  "Change the setting at `path` to `v`, and save the settings, if `v` may
+  be it and is new. A change to the editor font applies once the setting
+  has been left alone for :font-delay-ms, so that stepping or typing
+  through sizes wraps the text only for the last."
+  [app now path v]
+  (let [s (settings/change (:settings app) path v)]
+    (if (or (nil? s) (= s (:settings app)))
+      app
+      (let [app (cond-> (assoc app :settings s :dirty? true)
+                  (= :editor-font (first path)) (assoc :fonts-at (+ now (:font-delay-ms app))))]
+        (if-let [error ((:save-settings-fn app) s)]
+          (assoc app :message (str "Can't save settings: " error))
+          app)))))
+
+(defn- set-field
+  "Field `node` holds `value` now. A settings field changes its setting."
+  [app now node value]
+  (let [id  (:id node)
+        app (-> app (assoc-in [:ui-values id] value) (assoc :dirty? true :blink-from now))]
+    (if-let [path (settings-fields id)]
+      (change-setting app now path (parse-long value))
+      app)))
+
+(defn- on-ui-click
+  "A click on a box: it doesn't reach the text. An editable field takes
+  the focus; a checkbox toggles."
+  [app now {:keys [node]}]
+  (cond
+    (ui/editable? node)        (focus app now (:id node))
+    (= :checkbox (:kind node)) (-> (blur app)
+                                   (assoc-in [:ui-values (:id node)] (not (ui-value app node)))
+                                   (assoc :dirty? true))
+    :else                      (blur app)))
 
 (defn- on-wheel [app dy]
   (scroll-to app (- (:scroll app) (* dy (:wheel-lines app) (layout/line-height (:layout app))))))
@@ -861,47 +967,86 @@
                            columns)})))))
 
 (def ^:private settings-padding "Points inside the settings window's border." 16)
-(def ^:private settings-label-width "Points for the settings' labels." 100)
+(def ^:private settings-gap "Points between the settings window's rows." 10)
+(def ^:private settings-labels ["Editor font" "UI font" "Theme" "Line height"])
 (def ^:private settings-size-width "Points for the settings' font size fields." 40)
 
 (defn- settings-window
-  "The settings, as a form over the text, inset by the margin. Read-only
-  for now: what it shows is the app's, not what is in its fields."
+  "The settings, as a form over the text, inset by the margin: a column
+  of labels as wide as the widest, and their fields. The font
+  sizes can be edited (see `settings-fields`); the rest is read-only for
+  now."
   [app]
-  (let [m     (:margin app)
-        row   (fn [label & fields]
-                {:kind :box :style {:direction :row :align :center :gap 8}
-                 :children (into [{:kind :label :text label
-                                   :style {:width settings-label-width}}]
-                                 fields)})
-        field (fn [id value & [width]]
-                (cond-> {:kind :field :id id :value (str value)}
-                  width (assoc :style {:width width})))
-        font  (fn [label id family size]
-                (row label
-                     (field (keyword "settings" (str id "-family")) family)
-                     (field (keyword "settings" (str id "-size")) size settings-size-width)))]
+  (let [m      (:margin app)
+        [lo hi] settings/font-sizes
+        ;; the labels in a column as wide as the widest, in points
+        label-w (/ (reduce max (map #(ui-width app %) settings-labels)) (:density app))
+        row    (fn [label & fields]
+                 {:kind :box :style {:direction :row :align :center :gap 8}
+                  :children (into [{:kind :label :text label :style {:width label-w}}]
+                                  fields)})
+        ;; fields fill their row, unless given a width
+        shown  (fn [id value & [width]]
+                 {:kind :field :id id :value (str value) :readonly? true
+                  :style (if width {:width width} {:width 0 :grow 1})})
+        ;; the fields' ids are :settings/<id>-family and :settings/<id>-size
+        font   (fn [label id setting]
+                 (let [{:keys [family size]} (get-in app [:settings setting])]
+                   (row label
+                        (shown (keyword "settings" (str id "-family")) family)
+                        {:kind :field :id (keyword "settings" (str id "-size"))
+                         :value (str size) :input :integer :min lo :max hi
+                         :style {:width settings-size-width}})))]
     {:kind :box
      :style {:position :absolute :left m :top m :right m
              :bottom (+ (/ (status-height app) (:density app)) m)
-             :padding settings-padding :gap 10 :border 1
+             :padding settings-padding :gap settings-gap :border 1
              :background (:status-background app) :border-color (:ui-border app)}
-     :children [{:kind :label :text "Settings" :style {:color (:status-foreground app)}}
-                (font "Editor font" "editor" (:editor-family app) (:editor-font-size app))
-                (font "UI font" "ui" (:ui-family app) (:ui-font-size app))
-                (row "Theme" (field :settings/theme "default"))
-                (row "Line height" (field :settings/line-height layout/line-spacing
-                                          settings-size-width))]}))
+     :children (let [[editor ui theme line-height] settings-labels]
+                 [{:kind :label :text "Settings" :style {:color (:status-foreground app)}}
+                  (font editor "editor" :editor-font)
+                  (font ui "ui" :ui-font)
+                  (row theme (shown :settings/theme "default"))
+                  (row line-height (shown :settings/line-height layout/line-spacing
+                                          settings-size-width))])}))
+
+(defn- close-window [app]
+  (-> (blur app) (assoc :window nil :dirty? true)))
 
 (defn- on-window-event
   "An event while a window is open: escape closes it, and clicks go to its
   boxes. The text takes nothing."
-  [app event]
+  [app now event]
   (case (:type event)
-    :key   (if (= sdl/K-ESCAPE (:key event)) (assoc app :window nil :dirty? true) app)
-    :click (if-let [hit (ui-hit app (:x event) (:y event))] (on-ui-click app hit) app)
+    :key   (if (= sdl/K-ESCAPE (:key event)) (close-window app) app)
+    :click (if-let [hit (ui-hit app (:x event) (:y event))] (on-ui-click app now hit) (blur app))
     (:text :composition :drag :wheel) app
     nil))
+
+(defn- on-field-key
+  "A key while field `node` has the focus. Other keys do nothing."
+  [app now node key mod]
+  (let [value (str (ui-value app node))
+        step  #(if-let [v (ui/stepped node value %)] (set-field app now node v) app)]
+    (condp = key
+      sdl/K-ESCAPE    (if (:window app) (close-window app) (blur app))
+      sdl/K-RETURN    (blur app)
+      sdl/K-KP-ENTER  (blur app)
+      sdl/K-TAB       (next-field app now (if (pos? (bit-and mod sdl/KMOD-SHIFT)) -1 1))
+      sdl/K-BACKSPACE (if (seq value) (set-field app now node (subs value 0 (dec (count value)))) app)
+      sdl/K-UP        (step 1)
+      sdl/K-DOWN      (step -1)
+      app)))
+
+(defn- on-focus-event
+  "An event while a field has the focus: keys and typing go to it."
+  [app now event]
+  (let [{:keys [node]} (focused-field app)]
+    (case (:type event)
+      :key  (on-field-key app now node (:key event) (:mod event 0))
+      :text (set-field app now node (ui/typed node (ui-value app node) (:text event)))
+      :composition app
+      nil)))
 
 (defn- shared-start [a b]
   (subs a 0 (count (take-while true? (map = a b)))))
@@ -961,14 +1106,20 @@
 (defn handle
   "The app after `event` (see the ns doc) at time `now` (ms)."
   [app event now]
-  (let [app (sync-view app)                 ; navigation needs a fresh layout
+  (let [;; once the editor font's wait is over, sync-view makes it
+        app (if (some-> (:fonts-at app) (<= now)) (dissoc app :fonts-at) app)
+        app (sync-view app)                 ; navigation needs a fresh layout
         composing? (some? (:composition app))
         ;; a message lasts until the next keystroke
         app (if (and (:message app) (#{:key :text} (:type event)))
               (-> app (dissoc :message) (assoc :dirty? true))
-              app)]
-    (if-let [app (and (:window app) (on-window-event app event))]
-      app
+              app)
+        ;; a field that is gone keeps no focus
+        app (if (and (:focus app) (nil? (focused-field app))) (blur app) app)
+]
+    (or
+      (when (:focus app) (on-focus-event app now event))
+      (when (:window app) (on-window-event app now event))
       (case (:type event)
         :quit   (assoc app :quit? true)
         :text   (on-text app now (:text event))
@@ -980,13 +1131,15 @@
                       (= :command (:mode app)) (on-command-key app now (:key event))
                       :else (on-key app now (:key event) (:mod event 0)))
         ;; The scroll bar leaves the document alone, so it works while composing.
-        ;; Boxes take the clicks on them, over the text and the scroll bar.
+        ;; Boxes take the clicks on them, over the text and the scroll bar;
+        ;; a click anywhere else gives up the focus.
         :click  (if-let [hit (ui-hit app (:x event) (:y event))]
-                  (on-ui-click app hit)
-                  (cond (on-scrollbar? app (:x event)) (on-scrollbar-click app (:y event))
-                        composing? app
-                        :else (on-click app now (:x event) (:y event)
-                                        (:mod event 0) (:clicks event 1))))
+                  (on-ui-click app now hit)
+                  (let [app (blur app)]
+                    (cond (on-scrollbar? app (:x event)) (on-scrollbar-click app (:y event))
+                          composing? app
+                          :else (on-click app now (:x event) (:y event)
+                                          (:mod event 0) (:clicks event 1)))))
         :drag   (cond (:grab app) (on-thumb-drag app (:y event))
                       composing? app
                       :else (on-drag app now (:x event) (:y event)))
@@ -1017,7 +1170,7 @@
         [x1 k1] (layout/caret L next true)]
     (if (and (< pos next) (= k k1) (not= x x1))
       [(min x x1) (max x x1)]
-      [x (+ x (px app (/ (:editor-font-size app) 2)))])))
+      [x (+ x (px app (/ (get-in app [:settings :editor-font :size]) 2)))])))
 
 (defn- text-caret-rect
   "A bar in insert mode, a block in normal mode."
@@ -1044,11 +1197,22 @@
      (max 1 (px app 1))
      caret-height]))
 
-(defn caret-rect
-  "The caret's [x y w h] in render pixels. While there is a command line,
-  the caret is there, not in the text."
+(defn- field-caret-rect
+  "A bar at the end of the text in the field with the focus, or nil."
   [app]
-  (if (command? app) (command-caret-rect app) (text-caret-rect app)))
+  (when-let [{:keys [node] [cx cy _ ch] :content} (focused-field app)]
+    (let [{:keys [line-height caret-top caret-height]} (get-in app [:ui :metrics])]
+      [(+ cx (ui-width app (str (ui-value app node))))
+       (+ cy (quot (- ch line-height) 2) caret-top)
+       (max 1 (px app 1))
+       caret-height])))
+
+(defn caret-rect
+  "The caret's [x y w h] in render pixels. While a field has the focus, or
+  there is a command line, the caret is there, not in the text."
+  [app]
+  (or (when (:focus app) (field-caret-rect app))
+      (if (command? app) (command-caret-rect app) (text-caret-rect app))))
 
 (defn- caret-in-view? [app]
   (let [[_ y _ h] (caret-rect app)
@@ -1056,29 +1220,30 @@
     (and (< y (+ m (view-height app))) (> (+ y h) m))))
 
 (defn- caret-blinking?
-  "The caret shows while focused, with no window open, and nothing
-  selected; a selection
-  replaces it. Scrolled out of view, it has nothing to blink. On the
-  command line, it always shows."
+  "The caret shows while focused. In the text, it shows while no window
+  is open and nothing is selected (a selection replaces it), and in view.
+  In a field with the focus, or on the command line, it always shows."
   [app]
   (and (:focused? app)
-       (not (:window app))
-       (or (command? app)
-           (and (nil? (ed/selection (:doc app))) (caret-in-view? app)))))
+       (cond (:focus app)   true
+             (:window app)  false
+             (command? app) true
+             :else (and (nil? (ed/selection (:doc app))) (caret-in-view? app)))))
 
 (defn caret-visible? [app now]
   (and (caret-blinking? app) (even? (quot (- now (:blink-from app)) (:blink-ms app)))))
 
 (defn ms-until-wake
   "How long the host may sleep before sending a :tick: until the caret next
-  toggles or a held drag next scrolls, or indefinitely (-1) when nothing
-  changes without an event."
+  toggles, a held drag next scrolls or the editor font is to be applied, or
+  indefinitely (-1) when nothing changes without an event."
   [app now]
   (let [b (:blink-ms app)
-        blink (if (caret-blinking? app) (- b (mod (- now (:blink-from app)) b)) -1)]
-    (cond (not (autoscrolling? app)) blink
-          (neg? blink)               (:autoscroll-ms app)
-          :else                      (min blink (:autoscroll-ms app)))))
+        waits (cond-> []
+                (caret-blinking? app) (conj (- b (mod (- now (:blink-from app)) b)))
+                (autoscrolling? app)  (conj (:autoscroll-ms app))
+                (:fonts-at app)       (conj (max 0 (- (:fonts-at app) now))))]
+    (if (seq waits) (reduce min waits) -1)))
 
 (defn pointer
   "The mouse cursor the pointer should show: :arrow over the scroll bar
@@ -1222,8 +1387,13 @@
             :let [st (ui/style node)
                   x (+ x dx), y (+ y dy), cx (+ cx dx), cy (+ cy dy)
                   bw (px app (:border st 0))
-                  border (or (:border-color st) (:ui-border app))
-                  color (or (:color st) (:foreground app))
+                  focused? (and (:id node) (= (:id node) (:focus app)))
+                  border (cond focused?          (:ui-focus app)
+                               (:border-color st) (:border-color st)
+                               :else             (:ui-border app))
+                  color (cond (:color st)      (:color st)
+                              (:readonly? node) (:status-foreground app)
+                              :else            (:foreground app))
                   bg (or (:background st) (when (= :field (:kind node)) (:ui-field-background app)))]]
       (when bg (fill! bg x y w h))
       (when (pos? bw)
@@ -1287,7 +1457,7 @@
     (doseq [{:keys [top height placed]} (:block-places app)
             :when (and (< top (+ scroll vh)) (> (+ top height) scroll))]
       (draw-boxes! app placed m (- m scroll) [0 m w vh]))
-    (when (and caret? (not (command? app)))
+    (when (and caret? (not (command? app)) (not (:focus app)))
       (if (insert? app) (draw-bar-caret! app) (draw-block-caret! app)))
     (sdl/set-render-clip-rect renderer ffi/null)
     (draw-scrollbar! app)
@@ -1295,6 +1465,8 @@
     (when (and caret? (command? app))
       (draw-bar-caret! app))
     (draw-boxes! app (:float-places app) 0 0 nil)
+    (when (and caret? (:focus app))
+      (draw-bar-caret! app))
     (sdl/render-present renderer)
     (textures/end-frame! textures)
     (textures/end-frame! (:ui-textures app))
