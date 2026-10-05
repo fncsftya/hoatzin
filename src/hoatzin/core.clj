@@ -2,6 +2,7 @@
   "The desktop host: an SDL window whose events drive hoatzin.app."
   (:require [jolt.ffi :as ffi]
             [hoatzin.app :as app]
+            [hoatzin.lib.coretext :as ct]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.app.settings :as settings]))
 
@@ -179,6 +180,7 @@
                                     :write-file-fn write-file
                                     :settings     (:settings loaded)
                                     :save-settings-fn #(settings/write-file! settings-file %)
+                                    :font-families-fn ct/font-families
                                     :message      (when error (str "Can't read settings: " error))
                                     :now          (sdl/get-ticks)}))
         (with-open [a (ffi/confined-arena)]

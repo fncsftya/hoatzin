@@ -1,10 +1,12 @@
 (ns hoatzin.app.draw
   "Drawing the app, back to front: the text and the blocks in it, clipped
-  to the text area; the scroll bar and the status bar; then the floats."
+  to the text area; the scroll bar and the status bar; then the floats,
+  and an open dropdown list over them."
   (:require [hoatzin.app.caret :refer [caret-visible?]]
             [hoatzin.app.draw.boxes :refer [draw-boxes!]]
             [hoatzin.app.draw.caret :refer [draw-bar-caret! draw-block-caret!]]
             [hoatzin.app.draw.chrome :refer [draw-scrollbar! draw-status-bar!]]
+            [hoatzin.app.draw.dropdown :refer [draw-list!]]
             [hoatzin.app.draw.text :refer [draw-selection! draw-lines! draw-composition!]]
             [hoatzin.app.geometry :refer [view-height visible-lines]]
             [hoatzin.app.state :refer [px insert? command?]]
@@ -49,6 +51,7 @@
     (when (and caret? (command? app))
       (draw-bar-caret! app))
     (draw-boxes! app (:float-places app) 0 0 nil)
+    (draw-list! app)
     (when (and caret? (:focus app))
       (draw-bar-caret! app))
     (sdl/render-present renderer)

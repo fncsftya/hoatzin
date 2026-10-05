@@ -4,6 +4,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest]]
             [hoatzin.app :as app]
+            [hoatzin.app.dropdown :as dropdown]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.test-support :as t :refer [with-session]]))
 
@@ -197,6 +198,23 @@
                                 (:float-places (t/app s)))]
     (t/click! s (double (+ x (quot w 2))) (double (+ y (quot h 2))))))
 
+(deftest ^:integration settings-font-list
+  ;; the editor font's list open, scrolled a little, the pointer on an
+  ;; option, each in its own font; Georgia, the one chosen, ticked
+  (with-session [s]
+    (t/type! s hoatzin-text)
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "settings")
+    (click-field! s :settings/editor-family)
+    (t/send! s {:type :wheel :dy -0.4})
+    (t/advance! s 1000)
+    (let [{[ix iy iw] :inner :keys [row-h]} (dropdown/place (t/app s))
+          scroll (:scroll (:list (t/app s)))]
+      (t/send! s {:type :tick}
+               {:type :move :x (double (+ ix (quot iw 2)))
+                :y (double (- (+ iy (* 8 row-h) (quot row-h 2)) scroll))}))
+    (t/matches-golden? "settings-font-list" (t/render! s))))
+
 (deftest ^:integration settings-editing
   ;; a font size field with the focus, being typed into; then the window
   ;; closed on the sizes it set
@@ -207,6 +225,7 @@
     (click-field! s :settings/editor-size)
     (t/press! s sdl/K-BACKSPACE)
     (t/type! s "6")
+    (t/press! s sdl/K-TAB)                 ; past the UI font's dropdown
     (t/press! s sdl/K-TAB)
     (t/press! s sdl/K-UP)
     (t/press! s sdl/K-UP)

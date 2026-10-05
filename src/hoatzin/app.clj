@@ -8,9 +8,10 @@
   :open-dialog-fn (show a file dialog, whose file comes back as :opened),
   :save-dialog-fn (show a save dialog starting at the path it is given, or
   nil; the choice comes back as :save-chosen), :write-file-fn (write
-  string s to path p, returning nil, or why it could not) and
+  string s to path p, returning nil, or why it could not),
   :save-settings-fn (persist the settings, as hoatzin.app.settings has them,
-  returning nil, or why it could not).
+  returning nil, or why it could not) and :font-families-fn (the names of
+  the fonts installed, as hoatzin.lib.coretext/font-families gives them).
   That is what lets tests drive the editor headlessly and deterministically.
 
   The editor is modal. In :normal mode the text is left alone: keys move the
@@ -34,10 +35,14 @@
 
   Clicking an editable field (see hoatzin.lib.ui) gives it the focus: then
   typing goes into it, backspace takes from its end, up and down step an
-  integer field, tab and shift-tab move to the next and previous field,
-  and return or a click elsewhere gives the focus up. In the settings
-  window, a field holding a valid setting changes it, which applies and
-  saves it straight away; given up, it shows the setting again.
+  integer field, tab and shift-tab move to the next and previous field or
+  dropdown, and return or a click elsewhere gives the focus up. Clicking a
+  dropdown gives it the focus and opens its list; with the focus, return,
+  up, down or typing open it too. While the list is open it takes the
+  input (see hoatzin.app.dropdown): choosing an option closes it, and the
+  dropdown holds that option. In the settings window, a field or dropdown
+  holding a valid setting changes it, which applies and saves it straight
+  away; given up, a field shows the setting again.
 
   Events:
     {:type :text  :text s}          committed text input; in normal mode, a
@@ -76,6 +81,7 @@
             [hoatzin.app.caret :as caret]
             [hoatzin.app.command :as command]
             [hoatzin.app.draw :as draw]
+            [hoatzin.app.dropdown :as dropdown]
             [hoatzin.app.files :as files]
             [hoatzin.app.input.fields :as fields]
             [hoatzin.app.input.keyboard :as keyboard]
@@ -93,9 +99,9 @@
 (defn create
   "A new, empty editor drawing with `:renderer`. Options (all but :renderer
   optional): :density-fn, :clipboard-fn, :set-clipboard-fn, :open-dialog-fn,
-  :save-dialog-fn, :write-file-fn, :save-settings-fn, :now, :settings (the
-  defaults unless given), :mode (:normal unless given), :message, and any
-  key of hoatzin.app.state/defaults.
+  :save-dialog-fn, :write-file-fn, :save-settings-fn, :font-families-fn,
+  :now, :settings (the defaults unless given), :mode (:normal unless
+  given), :message, and any key of hoatzin.app.state/defaults.
   Release it with `destroy!`."
   [{:keys [now] :or {now 0} :as opts}]
   (sync/settle (merge state/defaults
@@ -106,6 +112,8 @@
                        :save-dialog-fn (fn [_])
                        :write-file-fn (fn [_ _] "no file system")
                        :save-settings-fn (fn [_])
+                       :font-families-fn (constantly [])
+                       :option-faces (atom {})
                        :settings     settings/defaults
                        :textures     (textures/cache)
                        :ui-textures  (textures/cache)
@@ -148,7 +156,7 @@
       ;; The scroll bar leaves the document alone, so it works while composing.
       ;; Boxes take the clicks on them, over the text and the scroll bar;
       ;; a click anywhere else gives up the focus.
-      :click  (if-let [hit (fields/ui-hit app (:x event) (:y event))]
+      :click  (if-let [hit (boxes/ui-hit app (:x event) (:y event))]
                 (fields/on-ui-click app now hit)
                 (let [app (fields/blur app)]
                   (cond (scroll/on-scrollbar? app (:x event))
@@ -161,8 +169,8 @@
                     :else (mouse/on-drag app now (:x event) (:y event)))
       :release (mouse/on-release app)
       :move   (-> (scroll/hover app (boolean (scroll/on-scrollbar? app (:x event))))
-                  (assoc :ui-hover? (some? (fields/ui-hit app (:x event) (:y event)))))
-      :leave  (-> (scroll/hover app false) (dissoc :ui-hover?))
+                  (boxes/hover (:x event) (:y event)))
+      :leave  (-> (scroll/hover app false) (boxes/hover nil nil))
       :tick   (mouse/autoscroll app now)
       :wheel  (scroll/on-wheel app (:dy event))
       :focus  (assoc app :focused? (:focused? event) :blink-from now :dirty? true)
@@ -172,9 +180,9 @@
       app)))
 
 (defn handle
-  "The app after `event` (see the ns doc) at time `now` (ms). The field
-  with the focus, if any, takes the event first, then the open window, if
-  any, then the text."
+  "The app after `event` (see the ns doc) at time `now` (ms). An open
+  dropdown list, if any, takes the event first, then the field or
+  dropdown with the focus, then the open window, then the text."
   [app event now]
   (let [;; once the editor font's wait is over, sync-view makes it
         app (if (some-> (:fonts-at app) (<= now)) (dissoc app :fonts-at) app)
@@ -183,9 +191,14 @@
         app (if (and (:message app) (#{:key :text} (:type event)))
               (-> app (dissoc :message) (assoc :dirty? true))
               app)
-        ;; a field that is gone keeps no focus
-        app (if (and (:focus app) (nil? (fields/focused-field app))) (fields/blur app) app)]
+        ;; a field that is gone keeps no focus, and a dropdown no list
+        app (if (and (:focus app) (nil? (boxes/focused-field app))) (fields/blur app) app)
+        app (if (and (:list app) (nil? (dropdown/place app))) (dropdown/close app) app)
+        ;; and a list closes as the window loses the focus
+        app (if (and (= :focus (:type event)) (not (:focused? event))) (dropdown/close app) app)
+        app (dropdown/glide app now)]
     (or
+      (when (:list app) (dropdown/on-event app now event))
       (when (:focus app) (fields/on-focus-event app now event))
       (when (:window app) (fields/on-window-event app now event))
       (on-text-event app now event))))
@@ -199,21 +212,23 @@
 
 (defn ms-until-wake
   "How long the host may sleep before sending a :tick: until the caret next
-  toggles, a held drag next scrolls or the editor font is to be applied, or
-  indefinitely (-1) when nothing changes without an event."
+  toggles, a held drag next scrolls, the editor font is to be applied or a
+  gliding dropdown list next moves, or indefinitely (-1) when nothing
+  changes without an event."
   [app now]
   (let [b (:blink-ms app)
         waits (cond-> []
                 (caret/caret-blinking? app) (conj (- b (mod (- now (:blink-from app)) b)))
                 (mouse/autoscrolling? app)  (conj (:autoscroll-ms app))
-                (:fonts-at app)             (conj (max 0 (- (:fonts-at app) now))))]
+                (:fonts-at app)             (conj (max 0 (- (:fonts-at app) now)))
+                (dropdown/gliding? app)     (conj (:frame-ms app)))]
     (if (seq waits) (reduce min waits) -1)))
 
 (defn pointer
   "The mouse cursor the pointer should show: :arrow over the scroll bar
-  or a box, or while a window is open, else :text."
+  or a box, or while a window or a dropdown's list is open, else :text."
   [app]
-  (if (or (:hover? app) (:grab app) (:ui-hover? app) (:window app)) :arrow :text))
+  (if (or (:hover? app) (:grab app) (:ui-hover? app) (:window app) (:list app)) :arrow :text))
 
 (defn needs-draw? [app now]
   (or (:dirty? app) (not= (caret/caret-visible? app now) (:drawn-phase app))))

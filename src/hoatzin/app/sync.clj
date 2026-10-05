@@ -18,8 +18,9 @@
   (some-> textures textures/clear!)
   (some-> font ct/release-font))
 
-(defn- release-ui-view! [{:keys [ui ui-textures]}]
+(defn- release-ui-view! [{:keys [ui ui-textures option-faces]}]
   (some-> ui-textures textures/clear!)
+  (some-> option-faces face/release-family-faces!)
   (some-> ui face/release-face!))
 
 (defn release-view!

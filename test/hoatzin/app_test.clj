@@ -5,6 +5,8 @@
             [clojure.test :refer [deftest is testing]]
             [hoatzin.app :as app]
             [hoatzin.app.command :as command]
+            [hoatzin.app.dropdown :as dropdown]
+            [hoatzin.app.geometry :as geo]
             [hoatzin.lib.layout :as layout]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.test-support :as t :refer [with-session]]))
@@ -1014,9 +1016,9 @@
         (:float-places (t/app s))))
 
 (defn- settings-values
-  "What the settings window's fields show, by :id."
+  "What the settings window's fields and dropdowns show, by :id."
   [s]
-  (into {} (keep #(when (= :field (get-in % [:node :kind]))
+  (into {} (keep #(when (#{:field :dropdown} (get-in % [:node :kind]))
                     [(get-in % [:node :id]) (get-in % [:node :value])]))
         (:float-places (t/app s))))
 
@@ -1068,7 +1070,7 @@
 (deftest editing-font-sizes
   (with-session [s :mode :normal]
     (t/command! s "settings")
-    (click-field! s :settings/editor-family)
+    (click-field! s :settings/theme)
     (is (nil? (:focus (t/app s))) "a read-only field takes no focus")
     (click-field! s :settings/editor-size)
     (is (= :settings/editor-size (:focus (t/app s))))
@@ -1100,11 +1102,14 @@
       (is (= 23 (get-in (t/app s) [:settings :editor-font :size])) "230 is too big")
       (t/press! s sdl/K-UP)
       (is (= 72 (get-in (t/app s) [:settings :editor-font :size])) "kept to the largest"))
-    (testing "tab moves between the editable fields"
+    (testing "tab moves between the editable fields and the dropdowns"
+      (t/press! s sdl/K-TAB)
+      (is (= :settings/ui-family (:focus (t/app s))))
+      (is (not (app/caret-visible? (t/app s) (:now @s))) "a dropdown has no caret")
       (t/press! s sdl/K-TAB)
       (is (= :settings/ui-size (:focus (t/app s))))
       (t/press! s sdl/K-TAB)
-      (is (= :settings/editor-size (:focus (t/app s))) "wrapping around")
+      (is (= :settings/editor-family (:focus (t/app s))) "wrapping around")
       (t/press! s sdl/K-TAB sdl/KMOD-SHIFT)
       (is (= :settings/ui-size (:focus (t/app s)))))
     (testing "given up, a field shows its setting, not what was typed"
@@ -1162,3 +1167,239 @@
       (is (= 14 (get-in (t/app s) [:fonts :ui-font :size])) "it applies straight away")
       (is (identical? ctx (:ctx (t/app s))))
       (is (identical? layout (:layout (t/app s)))))))
+;; ---------------------------------------------------------------- dropdowns
+
+(defn- node-of
+  "The settings window's box `id`, as placed: {:node :rect :content}."
+  [s id]
+  (some #(when (= id (get-in % [:node :id])) %) (:float-places (t/app s))))
+
+(defn- list-of [s] (:list (t/app s)))
+(defn- list-place [s] (dropdown/place (t/app s)))
+
+(defn- shown-rows
+  "The options [i0, i1) wholly in view in the open list."
+  [s]
+  (let [{:keys [row-h rows]} (list-place s)
+        i0 (long (Math/ceil (/ (:scroll (list-of s)) row-h)))]
+    [i0 (+ i0 rows (if (zero? (mod (long (:scroll (list-of s))) row-h)) 0 -1))]))
+
+(defn- row-point
+  "The middle of the open list's option `i`, as it is scrolled, in render
+  pixels."
+  [s i]
+  (let [{[ix iy iw] :inner :keys [row-h]} (list-place s)]
+    [(double (+ ix (quot iw 2)))
+     (double (+ iy (* i row-h) (- (:scroll (list-of s))) (quot row-h 2)))]))
+
+(defn- glide-on!
+  "Let `ms` pass, in steps as the host's ticks come."
+  [s ms]
+  (dotimes [_ (quot ms 8)]
+    (t/advance! s 8)
+    (t/send! s {:type :tick})))
+
+(defn- family [s setting] (get-in (t/app s) [:settings setting :family]))
+
+(deftest the-font-families-are-dropdowns
+  (with-session [s :mode :normal]
+    (t/command! s "settings")
+    (let [{:keys [node]} (node-of s :settings/editor-family)]
+      (is (= :dropdown (:kind node)))
+      (is (= t/font-families (:options node)) "the fonts installed, as the host finds them")
+      (is (:fonts? node) "each shown in its own font"))
+    (is (= "Menlo" (:value (:node (node-of s :settings/ui-family)))))
+    (testing "a click opens the list, on the font the dropdown holds"
+      (click-field! s :settings/editor-family)
+      (is (= :settings/editor-family (:focus (t/app s))))
+      (is (= 6 (:active (list-of s))) "Georgia")
+      (let [{[_ y] :rect :keys [rows max-scroll]} (list-place s)
+            {[_ cy _ ch] :rect} (node-of s :settings/editor-family)
+            [i0 i1] (shown-rows s)]
+        (is (> y (+ cy ch)) "below the dropdown")
+        (is (<= rows 8) "no more than 8 options at once")
+        (is (pos? max-scroll) "scrolling through the rest")
+        (is (< i0 6 (dec i1)) "Georgia shows, in the middle")
+        (is (= (:scroll (list-of s)) (:target (list-of s))) "straight away")))
+    (is (= :arrow (app/pointer (t/app s))))
+    (is (= -1 (app/ms-until-wake (t/app s) (:now @s))) "nothing to wake for")
+    (testing "keys move it"
+      (t/press! s sdl/K-DOWN)
+      (is (= 7 (:active (list-of s))))
+      (t/press! s sdl/K-HOME)
+      (is (= 0 (:active (list-of s))))
+      (t/press! s sdl/K-UP)
+      (is (= 0 (:active (list-of s))) "kept to the first")
+      (t/press! s sdl/K-END)
+      (is (= 14 (:active (list-of s))))
+      (t/press! s sdl/K-DOWN)
+      (is (= 14 (:active (list-of s))) "and the last")
+      (glide-on! s 1000)
+      (is (== (:max-scroll (list-place s)) (:scroll (list-of s))) "scrolling to show it")
+      (t/press! s sdl/K-PAGEUP)
+      (is (= (- 14 (dec (:rows (list-place s)))) (:active (list-of s))) "a list's worth less one")
+      (t/press! s sdl/K-PAGEDOWN)
+      (is (= 14 (:active (list-of s)))))
+    (testing "escape closes the list without choosing, and then the window"
+      (t/press! s sdl/K-ESCAPE)
+      (is (nil? (list-of s)))
+      (is (= :settings (:window (t/app s))))
+      (is (= :settings/editor-family (:focus (t/app s))) "the dropdown keeps the focus")
+      (is (= "Georgia" (family s :editor-font)))
+      (t/press! s sdl/K-ESCAPE)
+      (is (nil? (:window (t/app s)))))))
+
+(deftest choosing-a-font-family
+  (with-session [s :mode :normal]
+    (t/command! s "settings")
+    (click-field! s :settings/editor-family)
+    (testing "return chooses the option the list is on"
+      (t/press! s sdl/K-DOWN)
+      (t/press! s sdl/K-RETURN)
+      (is (nil? (list-of s)) "closing it")
+      (is (= :settings/editor-family (:focus (t/app s))))
+      (is (= "Gill Sans" (family s :editor-font)))
+      (is (= "Gill Sans" (get-in @s [:saved-settings :editor-font :family])) "saving it")
+      (is (= "Gill Sans" (:value (:node (node-of s :settings/editor-family)))))
+      (is (= "Georgia" (get-in (t/app s) [:fonts :editor-font :family])) "the font waits")
+      (t/advance! s 150)
+      (t/send! s {:type :tick})
+      (is (= "Gill Sans" (get-in (t/app s) [:fonts :editor-font :family])) "then applies"))
+    (testing "with the focus, return, up and down open it again"
+      (doseq [k [sdl/K-RETURN sdl/K-UP sdl/K-DOWN]]
+        (t/press! s k)
+        (is (= 7 (:active (list-of s))))
+        (t/press! s sdl/K-ESCAPE)))
+    (testing "space chooses"
+      (t/type! s " ")
+      (is (= 7 (:active (list-of s))) "opening it first")
+      (t/press! s sdl/K-UP)
+      (t/type! s " ")
+      (is (nil? (list-of s)))
+      (is (= "Georgia" (family s :editor-font))))
+    (testing "a click on an option chooses it"
+      (click-field! s :settings/ui-family)
+      (is (= :settings/ui-family (:focus (t/app s))))
+      (is (= 9 (:active (list-of s))) "Menlo")
+      (let [[i0 i1] (shown-rows s)
+            i (dec i1)
+            option (nth t/font-families i)]
+        (apply t/send! s [{:type :move :x (first (row-point s i)) :y (second (row-point s i))}])
+        (is (= i (:active (list-of s))) "the pointer moves it")
+        (is (< i0 i) "an option further down")
+        (apply t/click! s (row-point s i))
+        (is (nil? (list-of s)))
+        (is (= option (family s :ui-font)))
+        (is (= option (get-in (t/app s) [:fonts :ui-font :family])) "the UI font applies at once")))))
+
+(deftest typing-into-a-font-family-list
+  (with-session [s :mode :normal]
+    (t/command! s "settings")
+    (click-field! s :settings/editor-family)
+    (t/press! s sdl/K-ESCAPE)
+    (testing "typing opens the list, on the first option it begins"
+      (t/type! s "t")
+      (is (= 12 (:active (list-of s))) "Times New Roman")
+      (t/advance! s 500)
+      (t/type! s "R")
+      (is (= 13 (:active (list-of s))) "Trebuchet MS, ignoring case")
+      (t/type! s "x")
+      (is (= 13 (:active (list-of s))) "no option begins trx"))
+    (testing "letters typed apart start a new name"
+      (t/advance! s 1000)
+      (t/type! s "c")
+      (is (= 4 (:active (list-of s))) "Courier New"))
+    (testing "a space in a name is part of it, rather than choosing"
+      (t/advance! s 1000)
+      (t/type! s "gill ")
+      (is (some? (list-of s)))
+      (is (= 7 (:active (list-of s))) "Gill Sans")
+      (t/advance! s 1000)
+      (t/type! s " ")
+      (is (nil? (list-of s)))
+      (is (= "Gill Sans" (family s :editor-font))))))
+
+(deftest a-font-family-list-scrolls-smoothly
+  (with-session [s :mode :normal]
+    (t/command! s "settings")
+    (click-field! s :settings/editor-family)
+    (let [{:keys [row-h max-scroll]} (list-place s)
+          s0 (:scroll (list-of s))
+          target (min max-scroll (+ s0 (* 3 row-h)))]
+      (t/send! s {:type :wheel :dy -1})
+      (is (== target (:target (list-of s))) "the wheel heads it down")
+      (is (= s0 (:scroll (list-of s))) "but it doesn't jump")
+      (is (= 8 (app/ms-until-wake (t/app s) (:now @s))) "it wakes to glide")
+      (glide-on! s 48)
+      (let [moved (/ (- (:scroll (list-of s)) s0) (- target s0))]
+        (is (< 0.5 moved 0.8) "about two thirds of the way in :list-glide-ms"))
+      (glide-on! s 400)
+      (is (== target (:scroll (list-of s))) "then it arrives")
+      (is (= -1 (app/ms-until-wake (t/app s) (:now @s))))
+      (t/send! s {:type :wheel :dy -100})
+      (is (== max-scroll (:target (list-of s))) "kept within the list")
+      (t/send! s {:type :wheel :dy 100})
+      (is (zero? (:target (list-of s)))))
+    (testing "an option glides under a still pointer"
+      (glide-on! s 1000)
+      (let [[x y] (row-point s 1)]
+        (t/send! s {:type :move :x x :y y})
+        (is (= 1 (:active (list-of s))))
+        (t/send! s {:type :wheel :dy -1})
+        (glide-on! s 1000)
+        (is (= 4 (:active (list-of s))) "three rows on")))))
+
+(deftest a-font-family-list-closes
+  (with-session [s :mode :normal]
+    (t/command! s "settings")
+    (testing "on a click elsewhere, which goes no further"
+      (click-field! s :settings/editor-family)
+      (t/click! s 4.0 4.0)
+      (is (nil? (list-of s)))
+      (is (= :settings (:window (t/app s))))
+      (click-field! s :settings/editor-family)
+      (click-field! s :settings/editor-size)
+      (is (nil? (list-of s)))
+      (is (= :settings/editor-family (:focus (t/app s)))))
+    (testing "on a click on its dropdown"
+      (click-field! s :settings/editor-family)
+      (is (some? (list-of s)))
+      (click-field! s :settings/editor-family)
+      (is (nil? (list-of s))))
+    (testing "as tab moves the focus on"
+      (click-field! s :settings/editor-family)
+      (t/press! s sdl/K-TAB)
+      (is (nil? (list-of s)))
+      (is (= :settings/editor-size (:focus (t/app s)))))
+    (testing "when the window loses the focus"
+      (click-field! s :settings/ui-family)
+      (t/send! s {:type :focus :focused? false})
+      (is (nil? (list-of s))))
+    (is (= "Georgia" (family s :editor-font)))
+    (is (= "Menlo" (family s :ui-font)))
+    (is (nil? (:saved-settings @s)) "nothing chosen")))
+
+(deftest a-dropdown-shows-the-pointer-over-it
+  (with-session [s :mode :normal]
+    (t/command! s "settings")
+    (let [[x y] (field-point s :settings/ui-family)]
+      (t/send! s {:type :move :x x :y y})
+      (is (= :settings/ui-family (:ui-hover-id (t/app s))))
+      (is (:dirty? (t/app s)) "which shows")
+      (t/send! s {:type :move :x 2.0 :y 2.0})
+      (is (nil? (:ui-hover-id (t/app s))))
+      (t/send! s {:type :move :x x :y y} {:type :leave})
+      (is (nil? (:ui-hover-id (t/app s)))))))
+
+(deftest a-font-family-list-fits-the-window
+  (doseq [h [140 180 300]
+          id [:settings/editor-family :settings/ui-family]]
+    (with-session [s :mode :normal :height h]
+      (t/command! s "settings")
+      (click-field! s id)
+      (let [{[_ y _ lh] :rect :keys [rows]} (list-place s)
+            {[_ cy _ ch] :rect} (node-of s id)]
+        (is (pos? rows))
+        (is (<= 0 y) (str h " " id))
+        (is (<= (+ y lh) (geo/text-height (t/app s))) "above the status bar")
+        (is (or (>= y (+ cy ch)) (<= (+ y lh) cy)) "not over its dropdown")))))

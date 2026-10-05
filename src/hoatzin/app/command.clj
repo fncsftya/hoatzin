@@ -9,6 +9,7 @@
             [hoatzin.app.face :refer [ui-width]]
             [hoatzin.app.files :as files]
             [hoatzin.app.geometry :refer [status-height]]
+            [hoatzin.app.settings-window :as settings-window]
             [hoatzin.app.state :refer [px command? enter-mode]]
             [hoatzin.lib.sdl :as sdl]))
 
@@ -30,7 +31,7 @@
    "write" (fn [app _] (if-let [path (:path app)] (files/write-file app path) (files/save-as app)))
    "save"  (fn [app _] (files/save-as app))
    "quit"  quit
-   "settings" (fn [app _] (assoc app :window :settings :dirty? true))})
+   "settings" (fn [app _] (settings-window/open app))})
 
 (defn- names-beginning
   "The commands' names that begin with `typed`, alphabetically."

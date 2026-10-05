@@ -1,22 +1,22 @@
 (ns hoatzin.app.draw.boxes
   "Drawing placed boxes (see hoatzin.lib.ui/place), in the UI font and
   the app's colours where their style sets none."
-  (:require [hoatzin.app.face :refer [face-line face-width]]
-            [hoatzin.app.input.fields :refer [ui-value]]
+  (:require [hoatzin.app.boxes :refer [ui-value]]
+            [hoatzin.app.face :refer [face-line face-width]]
             [hoatzin.app.state :refer [px]]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.lib.textures :as textures]
             [hoatzin.lib.ui :as ui]
             [jolt.ffi :as ffi]))
 
-(defn- set-clip!
+(defn set-clip!
   "Clip drawing to [x y w h], or with nil not at all."
   [{:keys [renderer scratch]} clip]
   (sdl/set-render-clip-rect renderer (if-let [[x y w h] clip]
                                        (sdl/set-rect! (:irect scratch) x y w h)
                                        ffi/null)))
 
-(defn- intersect
+(defn intersect
   "Rects [x y w h] `a` and `b` (nil: everywhere) overlap here, or nil."
   [a b]
   (if-not a
@@ -26,23 +26,41 @@
           x1 (min (+ ax aw) (+ bx bw)), y1 (min (+ ay ah) (+ by bh))]
       (when (and (< x0 x1) (< y0 y1)) [x0 y0 (- x1 x0) (- y1 y0)]))))
 
-(defn- draw-ui-text!
-  "One line of `text` in `rect` [x y w h], in the UI font, clipped to the
-  rect and to `clip`: centred vertically, and with `centre?` horizontally."
-  [app text [x y w h :as rect] color centre? clip]
+(defn draw-text!
+  "One line of `text` in `rect` [x y w h], in face `f`, clipped to the
+  rect and to `clip`: centred vertically, and with `centre?` horizontally.
+  Its texture is cached as `key`, which must tell it from any other text
+  in any other face or colour."
+  [app f key text [x y w h :as rect] color centre? clip]
   (when-let [visible (and (seq text) (intersect clip rect))]
-    (let [{:keys [renderer scratch ui ui-textures]} app
-          {:keys [line-height baseline]} (:metrics ui)
-          {:keys [line]} (face-line ui text)
+    (let [{:keys [renderer scratch ui-textures]} app
+          {:keys [line-height baseline]} (:metrics f)
+          {:keys [line]} (face-line f text)
           {:keys [texture width height pad] base :baseline}
-          (textures/fetch! ui-textures renderer [color text] line color)
-          x (if centre? (+ x (quot (- w (face-width ui text)) 2)) x)]
+          (textures/fetch! ui-textures renderer key line color)
+          x (if centre? (+ x (quot (- w (face-width f text)) 2)) x)]
       (set-clip! app visible)
       (sdl/render-texture renderer texture ffi/null
                           (sdl/set-frect! (:frect scratch) (- x pad)
                                           (+ y (quot (- h line-height) 2) baseline (- base))
                                           width height))
       (set-clip! app clip))))
+
+(defn- draw-ui-text!
+  "`draw-text!` in the UI font."
+  [app text rect color centre? clip]
+  (draw-text! app (:ui app) [color text] text rect color centre? clip))
+
+(def ^:private arrow "What a dropdown shows at its right." "▾")
+(def ^:private arrow-gap "Points between a dropdown's value and its arrow." 4)
+
+(defn- draw-dropdown!
+  "A dropdown's value, in the UI font, and its arrow at the right."
+  [app node [cx cy cw ch] color clip]
+  (let [aw (min cw (face-width (:ui app) arrow))]
+    (draw-ui-text! app (str (ui-value app node))
+                   [cx cy (max 0 (- cw aw (px app arrow-gap))) ch] color false clip)
+    (draw-ui-text! app arrow [(- (+ cx cw) aw) cy aw ch] (:status-foreground app) true clip)))
 
 (defn draw-boxes!
   "Placed boxes moved by (`dx`, `dy`), within `clip` [x y w h] (nil: the
@@ -63,7 +81,12 @@
                   color (cond (:color st)      (:color st)
                               (:readonly? node) (:status-foreground app)
                               :else            (:foreground app))
-                  bg (or (:background st) (when (= :field (:kind node)) (:ui-field-background app)))]]
+                  hovered? (and (:id node) (= (:id node) (:ui-hover-id app)))
+                  bg (or (:background st)
+                         (case (:kind node)
+                           :field    (:ui-field-background app)
+                           :dropdown (if hovered? (:ui-hover app) (:ui-field-background app))
+                           nil))]]
       (when bg (fill! bg x y w h))
       (when (pos? bw)
         (fill! border x y w bw)
@@ -74,6 +97,7 @@
         :label    (draw-ui-text! app (str (:text node)) [cx cy cw ch] color false clip)
         :button   (draw-ui-text! app (str (:text node)) [cx cy cw ch] color true clip)
         :field    (draw-ui-text! app (str (ui-value app node)) [cx cy cw ch] color false clip)
+        :dropdown (draw-dropdown! app node [cx cy cw ch] color clip)
         :checkbox (when (ui-value app node)
                     (fill! (or (:color st) (:ui-accent app)) cx cy cw ch))
         nil))))

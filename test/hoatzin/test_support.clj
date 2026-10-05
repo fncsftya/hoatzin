@@ -148,6 +148,13 @@
 
 ;; ---------------------------------------------------------------- sessions
 
+(def font-families
+  "The fonts a session finds installed: some of those every macOS has, so
+  that renders don't depend on what else is."
+  ["American Typewriter" "Arial" "Avenir" "Baskerville" "Courier New" "Futura"
+   "Georgia" "Gill Sans" "Helvetica" "Menlo" "Optima" "Palatino" "Times New Roman"
+   "Trebuchet MS" "Verdana"])
+
 (defn session
   "A headless editor, `width` x `height` points at `density`, starting in
   `mode`: :insert unless given, so tests can type straight away, and nil
@@ -179,6 +186,7 @@
                                              (fn [settings]
                                                (or (:settings-error @s)
                                                    (do (swap! s assoc :saved-settings settings) nil)))
+                                             :font-families-fn (constantly font-families)
                                              :now          0}
                                       mode (assoc :mode mode))))
     s))

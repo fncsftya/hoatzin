@@ -1,17 +1,19 @@
 (ns hoatzin.app.caret
   "The caret: where it is drawn, its shape, and when it blinks. It is in
-  the field with the focus if there is one, else on the command line if
+  the field with the focus if there is one (a dropdown with it has none),
+  else on the command line if
   that is open, else in the text: a bar in insert mode and a block in
   normal mode."
   (:require [hoatzin.app.command :as command]
             [hoatzin.app.display :refer [view-caret]]
             [hoatzin.app.face :refer [face-line ui-width]]
             [hoatzin.app.geometry :as geo]
-            [hoatzin.app.input.fields :refer [focused-field ui-value]]
+            [hoatzin.app.boxes :refer [focused-field ui-value]]
             [hoatzin.app.state :refer [px insert? command?]]
             [hoatzin.lib.coretext :as ct]
             [hoatzin.lib.editor :as ed]
-            [hoatzin.lib.layout :as layout]))
+            [hoatzin.lib.layout :as layout]
+            [hoatzin.lib.ui :as ui]))
 
 ;; ---------------------------------------------------------------- where
 
@@ -52,10 +54,15 @@
      (max 1 (px app 1))
      caret-height]))
 
+(defn- typing-field
+  "The field with the focus, placed, if it can be typed into, or nil."
+  [app]
+  (when-let [f (focused-field app)] (when (ui/editable? (:node f)) f)))
+
 (defn- field-caret-rect
   "A bar at the end of the text in the field with the focus, or nil."
   [app]
-  (when-let [{:keys [node] [cx cy _ ch] :content} (focused-field app)]
+  (when-let [{:keys [node] [cx cy _ ch] :content} (typing-field app)]
     (let [{:keys [line-height caret-top caret-height]} (get-in app [:ui :metrics])]
       [(+ cx (ui-width app (str (ui-value app node))))
        (+ cy (quot (- ch line-height) 2) caret-top)
@@ -79,10 +86,11 @@
 (defn caret-blinking?
   "The caret shows while focused. In the text, it shows while no window
   is open and nothing is selected (a selection replaces it), and in view.
-  In a field with the focus, or on the command line, it always shows."
+  In a field with the focus, or on the command line, it always shows; a
+  dropdown with the focus has none."
   [app]
   (and (:focused? app)
-       (cond (:focus app)   true
+       (cond (:focus app)   (some? (typing-field app))
              (:window app)  false
              (command? app) true
              :else (and (nil? (ed/selection (:doc app))) (caret-in-view? app)))))

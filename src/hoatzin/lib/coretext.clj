@@ -46,6 +46,11 @@
   [:pointer :pointer :pointer :long :pointer :pointer] :iptr)
 (ffi/defcfn ^:private cf-attributed-string-create "CFAttributedStringCreate"
   [:pointer :iptr :iptr] :iptr)
+(ffi/defcfn ^:private cf-array-count "CFArrayGetCount" [:iptr] :long)
+(ffi/defcfn ^:private cf-array-value-at "CFArrayGetValueAtIndex" [:iptr :long] :iptr)
+
+(ffi/defcfn ^:private ct-font-manager-family-names "CTFontManagerCopyAvailableFontFamilyNames"
+  [] :iptr)
 
 (ffi/defcfn ^:private ct-font-create-with-name "CTFontCreateWithName"
   [:iptr :double :pointer] :iptr)
@@ -153,6 +158,21 @@
 (defn release-font [{:keys [ref attrs]}]
   (release attrs)
   (release ref))
+
+(defn font-families
+  "The names of the font families installed, as `font` takes them,
+  alphabetically, ignoring case. Leaves out the system's hidden families,
+  whose names start with a dot."
+  []
+  (let [arr (ct-font-manager-family-names)]
+    (try
+      (->> (range (cf-array-count arr))
+           (keep #(cf-string->str (cf-array-value-at arr %)))
+           (remove #(or (str/blank? %) (str/starts-with? % ".")))
+           distinct
+           (sort-by (juxt str/lower-case identity))
+           vec)
+      (finally (cf-release arr)))))
 
 ;; ---------------------------------------------------------------- wrapping
 

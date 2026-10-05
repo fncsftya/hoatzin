@@ -1,11 +1,13 @@
 (ns hoatzin.app.boxes
   "Boxes (see hoatzin.lib.ui) shown with the text: blocks, in the text
   below a paragraph, and floats, above everything. Adding them, and where
-  they are placed."
+  they are placed, and finding them there."
   (:require [hoatzin.app.command :as command]
             [hoatzin.app.display :refer [shown-pos]]
             [hoatzin.app.face :refer [ui-context]]
+            [hoatzin.app.geometry :refer [view-height]]
             [hoatzin.app.settings-window :as settings-window]
+            [hoatzin.app.state :refer [px]]
             [hoatzin.lib.editor :as ed]
             [hoatzin.lib.layout :as layout]
             [hoatzin.lib.ui :as ui]))
@@ -80,3 +82,46 @@
                         [0 0 w h])
               1))
     []))
+
+;; ---------------------------------------------------------------- finding
+
+(defn ui-value
+  "What interactive box `node` holds: what it was set to, else its :value."
+  [app {:keys [id value]}]
+  (get (:ui-values app) id value))
+
+(defn ui-hit
+  "The box under render pixel (x, y), as hoatzin.lib.ui/hit gives it:
+  floats before blocks, and blocks only where the text is in view."
+  [app x y]
+  (or (ui/hit (:float-places app) x y)
+      (let [m (px app (:margin app))]
+        (when (and (>= y m) (< y (+ m (view-height app))))
+          (some #(ui/hit (:placed %) (- x m) (+ (- y m) (:scroll app)))
+                (:block-places app))))))
+
+(defn focusable-places
+  "Every box that can take the focus placed, in order (the floats', then
+  the blocks'), as hoatzin.lib.ui/place gives them but in render pixels."
+  [app]
+  (let [m (px app (:margin app))]
+    (filterv #(ui/focusable? (:node %))
+             (concat (:float-places app)
+                     (mapcat #(ui/offset (:placed %) m (- m (:scroll app))) (:block-places app))))))
+
+(defn focused-field
+  "The field or dropdown with the focus, as `focusable-places` has it, or
+  nil."
+  [app]
+  (when-let [id (:focus app)]
+    (some #(when (= id (get-in % [:node :id])) %) (focusable-places app))))
+
+(defn hover
+  "The pointer is at render pixel (x, y), or with x nil, out of the
+  window: note whether it is over a box, and the :id of the interactive
+  one it is over, which shows it."
+  [app x y]
+  (let [hit (when x (ui-hit app x y))
+        id  (when (some-> hit :node ui/interactive?) (get-in hit [:node :id]))]
+    (cond-> (assoc app :ui-hover? (some? hit))
+      (not= id (:ui-hover-id app)) (assoc :ui-hover-id id :dirty? true))))

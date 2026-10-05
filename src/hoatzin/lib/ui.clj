@@ -13,9 +13,15 @@
                                              digits can be typed, and up and
                                              down step it by one, within its
                                              :min and :max (if any)
+    {:kind :dropdown :id id :value s :options [s ...]}
+                                             one of :options, chosen from a
+                                             list that opens below it; as
+                                             wide as a field. With :fonts?,
+                                             the options are font families,
+                                             each listed in its own font
     {:kind :button :id id :text s}
     {:kind :checkbox :id id :value bool}
-  Interactive nodes (fields, buttons, checkboxes) need an :id: the app keeps
+  Interactive nodes (fields, dropdowns, buttons, checkboxes) need an :id: the app keeps
   their values in a map by it, so a node stays a description that can be
   rebuilt freely without losing what was typed or ticked.
 
@@ -50,6 +56,7 @@
   {:box      {}
    :label    {}
    :field    {:padding [3 5] :border 1}
+   :dropdown {:padding [3 5] :border 1}
    :button   {:padding [3 10] :border 1}
    :checkbox {:padding 2 :border 1}})
 
@@ -58,12 +65,17 @@
 
 (defn style [node] (merge (kind-styles (:kind node)) (:style node)))
 
-(defn interactive? [node] (contains? #{:field :button :checkbox} (:kind node)))
+(defn interactive? [node] (contains? #{:field :dropdown :button :checkbox} (:kind node)))
 
 (defn editable?
-  "Whether `node` is a field that can be edited, and so take the focus."
+  "Whether `node` is a field that can be edited."
   [node]
   (and (= :field (:kind node)) (not (:readonly? node))))
+
+(defn focusable?
+  "Whether `node` can take the focus: an editable field, or a dropdown."
+  [node]
+  (or (editable? node) (= :dropdown (:kind node))))
 
 ;; ---------------------------------------------------------------- editing
 
@@ -116,7 +128,7 @@
   (let [text-size (:text-size ctx)]
     (case (:kind node)
       (:label :button) (text-size (str (:text node)))
-      :field    [(px ctx field-width) (second (text-size ""))]
+      (:field :dropdown) [(px ctx field-width) (second (text-size ""))]
       :checkbox (let [s (px ctx check-size)] [s s])
       :box      (let [row?  (= :row (:direction st))
                       sizes (mapv #(measure ctx %) (flow-children node))

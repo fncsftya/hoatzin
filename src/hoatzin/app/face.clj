@@ -25,6 +25,12 @@
   (release-face-lines! f)
   (ct/release-font (:font f)))
 
+(defn release-family-faces!
+  "Release the faces in `cache`, as `family-face` keeps them."
+  [cache]
+  (run! release-face! (vals @cache))
+  (reset! cache {}))
+
 (defn face-line
   "`text` set as a line in face `f`, as hoatzin.lib.coretext's line
   functions take it, with its UTF-16 :length; :line is nil for \"\". Once
@@ -49,6 +55,24 @@
   "How wide `text` is in the UI font, in render pixels."
   [app text]
   (face-width (:ui app) text))
+
+(def ^:private family-faces-kept
+  "How many faces `family-face` keeps: more than a dropdown's list shows."
+  48)
+
+(defn family-face
+  "A face of font `family` at the UI font's size, to show its name in,
+  kept in the app's :option-faces. Once that holds `family-faces-kept`,
+  they are all dropped."
+  [app family]
+  (let [cache (:option-faces app)
+        size  (get-in app [:fonts :ui-font :size])
+        k     [family size (:density app)]]
+    (or (get @cache k)
+        (let [f (face app family size 4)]
+          (when (>= (count @cache) family-faces-kept) (release-family-faces! cache))
+          (swap! cache assoc k f)
+          f))))
 
 (defn ui-context
   "What hoatzin.lib.ui places boxes with: text one line high in the UI font."
