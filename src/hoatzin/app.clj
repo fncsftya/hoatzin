@@ -25,6 +25,10 @@
     :save                           choose where to save the file, and save it
     :quit                           quit the editor, unless there are unsaved
                                     changes; `:quit!` quits regardless
+    :settings                       show the settings window, over the text
+                                    until escape closes it
+
+  While a window is open, it takes the input: the text is left alone.
 
   Events:
     {:type :text  :text s}          committed text input; in normal mode, a
@@ -65,11 +69,13 @@
             [hoatzin.ui :as ui]))
 
 (def defaults
-  {:family      ct/default-family
-   :font-size   20             ; points; scaled by the pixel density
-   :status-family "Menlo"      ; monospace, and on every macOS install
-   :status-font-size 13        ; points: the status bar's mode label
-   :status-padding 4           ; points above and below the label
+  ;; Two fonts: the editor's, for the text, and the UI's, for everything
+  ;; else (the status bar, the command line and boxes).
+  {:editor-family ct/default-family
+   :editor-font-size 20        ; points; scaled by the pixel density
+   :ui-family   "Menlo"        ; monospace, and on every macOS install
+   :ui-font-size 13            ; points
+   :status-padding 4           ; points above and below the status bar's text
    :margin      24             ; points
    :blink-ms    530            ; the macOS caret blink period
    :wheel-lines 3
@@ -87,8 +93,6 @@
    :scrollbar-thumb-active [128 132 158]
    :status-background [24 24 37]
    :status-foreground [170 168 190]
-   :ui-family   "Helvetica"    ; text in boxes (see hoatzin.ui)
-   :ui-font-size 13            ; points
    :ui-border   [96 98 128]    ; boxes' colours, where their style sets none
    :ui-accent   [128 132 158]
    :ui-field-background [24 24 37]})
@@ -111,11 +115,12 @@
 ;;   :saved                                the text as it is in that file
 ;;   :modified? :compared                  whether the text differs from
 ;;                                         :saved, as of :compared [text saved]
-;;   :density :font                        the font, at the current density
-;;   :status                               the status bar's {:font :metrics
+;;   :density :font                        the editor font, at the current
+;;                                         density
+;;   :ui :ui-textures                      the UI font's {:font :metrics
 ;;                                         :lines}, :lines an atom caching
-;;                                         its texts, set as lines
-;;   :status-textures                      its label texture cache
+;;                                         texts set as lines in it, and its
+;;                                         texture cache
 ;;   :ctx :layout :laid-out                layout context, layout, its text
 ;;   :textures :scratch                    line texture cache, FFI scratch
 ;;   :doc :goal-x                          the document (see hoatzin.editor);
@@ -128,6 +133,8 @@
 ;;   :hover? :grab                         the pointer is over the scroll bar;
 ;;                                         the thumb is held :grab px below its top
 ;;   :composition                          {:text :cursor} while composing, or nil
+;;   :window                               the window open over the text
+;;                                         (:settings), or nil
 ;;   :blocks                               boxes in the text (see hoatzin.ui), by
 ;;                                         id: each sits below the paragraph
 ;;                                         holding the document's mark of that id
@@ -137,7 +144,6 @@
 ;;   :block-places :float-places           where they are, as `place-blocks` and
 ;;                                         `place-floats` say; the floats placed
 ;;                                         include the command line's hints
-;;   :ui :ui-textures                      text in boxes: its face, its textures
 ;;   :ui-hover?                            the pointer is over a box
 ;;   :size :scroll                         output size and scroll, in pixels
 ;;   :focused? :blink-from                 the caret blinks from :blink-from
@@ -234,16 +240,10 @@
   [{:keys [path modified?]}]
   (str (or (file-name path) "[No Name]") (when modified? " [+]")))
 
-(def ^:private status-lines-kept
-  "How many texts in the status bar's font are kept set as lines: its own,
-  and the command hints'."
-  64)
-
 (def ^:private ui-lines-kept
-  "How many texts in boxes are kept set as lines: more than are on screen."
+  "How many texts in the UI font are kept set as lines: more than are on
+  screen."
   512)
-
-(defn- status-line [{:keys [status]} text] (face-line status text))
 
 (defn- sync-modified
   "Whether the text differs from the file, compared only when either has
@@ -257,27 +257,23 @@
         (cond-> (assoc app :compared [text saved] :modified? modified?)
           (not= modified? (:modified? app)) (assoc :dirty? true))))))
 
-(defn- release-view! [{:keys [ctx textures font status status-textures ui ui-textures]}]
+(defn- release-view! [{:keys [ctx textures font ui ui-textures]}]
   (some-> ctx layout/release-context)
   (some-> textures textures/clear!)
   (some-> font ct/release-font)
-  (some-> status-textures textures/clear!)
-  (some-> status release-face!)
   (some-> ui-textures textures/clear!)
   (some-> ui release-face!))
 
-(defn- ui-face
-  "The face a box's style's :font names: :status, or else :ui."
-  [app font]
-  (if (= font :status) (:status app) (:ui app)))
+(defn- ui-width
+  "How wide `text` is in the UI font, in render pixels."
+  [app text]
+  (face-width (:ui app) text))
 
 (defn- ui-context
-  "What hoatzin.ui places boxes with: text one line high in its face."
+  "What hoatzin.ui places boxes with: text one line high in the UI font."
   [app]
   {:scale (:density app)
-   :text-size (fn [s font]
-                (let [f (ui-face app font)]
-                  [(face-width f s) (get-in f [:metrics :line-height])]))})
+   :text-size (fn [s] [(ui-width app s) (get-in app [:ui :metrics :line-height])])})
 
 (defn- shown-pos
   "Where document position `pos` is in the display text: past the
@@ -318,14 +314,16 @@
   [app {:keys [id value]}]
   (get (:ui-values app) id value))
 
-(declare command-hints)
+(declare command-hints settings-window)
 
 (defn- place-floats
   "The floats placed in the window, in render pixels: in a box as big as
-  it, which lays out those in flow down its left edge. The command line's
-  hints, if any, go on top."
+  it, which lays out those in flow down its left edge. The open window, if
+  any, then the command line's hints, if any, go on top."
   [app]
-  (if-let [floats (seq (cond-> (:floats app) (command-hints app) (conj (command-hints app))))]
+  (if-let [floats (seq (cond-> (:floats app)
+                         (= :settings (:window app)) (conj (settings-window app))
+                         (command-hints app)         (conj (command-hints app))))]
     (let [[w h] (:size app)]
       (subvec (ui/place (ui-context app)
                         {:kind :box :style {:align :start} :children (vec floats)}
@@ -344,12 +342,10 @@
               app
               (do (release-view! app)
                   (let [app (assoc app :density density
-                                       :font (ct/font (:family app) (* (:font-size app) density))
+                                       :font (ct/font (:editor-family app)
+                                                      (* (:editor-font-size app) density))
                                        :ctx nil)]
-                    (assoc app
-                           :status (face app (:status-family app) (:status-font-size app)
-                                         status-lines-kept)
-                           :ui (face app (:ui-family app) (:ui-font-size app) ui-lines-kept)))))
+                    (assoc app :ui (face app (:ui-family app) (:ui-font-size app) ui-lines-kept)))))
         [w _ :as size] (sdl/render-output-size (:renderer app))
         wrap (max 1 (- w (* 2 (px app (:margin app)))))
         app (if (= wrap (get-in app [:ctx :width]))
@@ -368,7 +364,7 @@
       (assoc app :block-places (place-blocks app) :float-places (place-floats app)))))
 
 (defn- status-height [app]
-  (+ (get-in app [:status :metrics :line-height]) (* 2 (px app (:status-padding app)))))
+  (+ (get-in app [:ui :metrics :line-height]) (* 2 (px app (:status-padding app)))))
 
 (defn- text-height
   "The height above the status bar: the text, its margins and the scroll bar."
@@ -477,7 +473,6 @@
                   :save-dialog-fn (fn [_])
                   :write-file-fn (fn [_ _] "no file system")
                   :textures     (textures/cache)
-                  :status-textures (textures/cache)
                   :ui-textures  (textures/cache)
                   :blocks       {}
                   :floats       []
@@ -791,7 +786,8 @@
   {"open"  (fn [app _] ((:open-dialog-fn app)) app)
    "write" (fn [app _] (if-let [path (:path app)] (write-file app path) (save-as app)))
    "save"  (fn [app _] (save-as app))
-   "quit"  quit})
+   "quit"  quit
+   "settings" (fn [app _] (assoc app :window :settings :dirty? true))})
 
 (defn- command-names
   "The commands `typed` could mean: the one it names, else those it begins."
@@ -838,7 +834,7 @@
 (defn- command-hints
   "While the command line is open, a float across the window just above
   the status bar, listing the commands that what is typed begins,
-  alphabetically, in the status bar's font and in line with its text; nil
+  alphabetically, in line with the status bar's text; nil
   when it begins none."
   [app]
   (when (command? app)
@@ -848,10 +844,10 @@
         (let [d       (:density app)
               [w]     (:size app)
               m       (px app (:margin app))
-              col-w   (reduce max (map #(face-width (:status app) %) names))
+              col-w   (reduce max (map #(ui-width app %) names))
               columns (hint-columns names col-w (px app hint-gap) (- w (* 2 m)))
               label   (fn [name] {:kind :label :text name
-                                  :style {:color (:status-foreground app) :font :status}})]
+                                  :style {:color (:status-foreground app)}})]
           ;; The side padding, with the border, is the margin: the names
           ;; line up with the command line's text.
           {:kind :box
@@ -863,6 +859,49 @@
            :children (mapv (fn [col] {:kind :box :style {:width (/ col-w d)}
                                       :children (mapv label col)})
                            columns)})))))
+
+(def ^:private settings-padding "Points inside the settings window's border." 16)
+(def ^:private settings-label-width "Points for the settings' labels." 100)
+(def ^:private settings-size-width "Points for the settings' font size fields." 40)
+
+(defn- settings-window
+  "The settings, as a form over the text, inset by the margin. Read-only
+  for now: what it shows is the app's, not what is in its fields."
+  [app]
+  (let [m     (:margin app)
+        row   (fn [label & fields]
+                {:kind :box :style {:direction :row :align :center :gap 8}
+                 :children (into [{:kind :label :text label
+                                   :style {:width settings-label-width}}]
+                                 fields)})
+        field (fn [id value & [width]]
+                (cond-> {:kind :field :id id :value (str value)}
+                  width (assoc :style {:width width})))
+        font  (fn [label id family size]
+                (row label
+                     (field (keyword "settings" (str id "-family")) family)
+                     (field (keyword "settings" (str id "-size")) size settings-size-width)))]
+    {:kind :box
+     :style {:position :absolute :left m :top m :right m
+             :bottom (+ (/ (status-height app) (:density app)) m)
+             :padding settings-padding :gap 10 :border 1
+             :background (:status-background app) :border-color (:ui-border app)}
+     :children [{:kind :label :text "Settings" :style {:color (:status-foreground app)}}
+                (font "Editor font" "editor" (:editor-family app) (:editor-font-size app))
+                (font "UI font" "ui" (:ui-family app) (:ui-font-size app))
+                (row "Theme" (field :settings/theme "default"))
+                (row "Line height" (field :settings/line-height layout/line-spacing
+                                          settings-size-width))]}))
+
+(defn- on-window-event
+  "An event while a window is open: escape closes it, and clicks go to its
+  boxes. The text takes nothing."
+  [app event]
+  (case (:type event)
+    :key   (if (= sdl/K-ESCAPE (:key event)) (assoc app :window nil :dirty? true) app)
+    :click (if-let [hit (ui-hit app (:x event) (:y event))] (on-ui-click app hit) app)
+    (:text :composition :drag :wheel) app
+    nil))
 
 (defn- shared-start [a b]
   (subs a 0 (count (take-while true? (map = a b)))))
@@ -928,41 +967,43 @@
         app (if (and (:message app) (#{:key :text} (:type event)))
               (-> app (dissoc :message) (assoc :dirty? true))
               app)]
-    (case (:type event)
-      :quit   (assoc app :quit? true)
-      :text   (on-text app now (:text event))
-      ;; Normal mode has no use for the input method's marked text.
-      :composition (if (insert? app) (compose app now (:text event) (:cursor event)) app)
-      ;; While composing, keys and clicks belong to the input method, and the
-      ;; layout shows the composition, so its positions aren't the document's.
-      :key    (cond composing? app
-                    (= :command (:mode app)) (on-command-key app now (:key event))
-                    :else (on-key app now (:key event) (:mod event 0)))
-      ;; The scroll bar leaves the document alone, so it works while composing.
-      ;; Boxes take the clicks on them, over the text and the scroll bar.
-      :click  (if-let [hit (ui-hit app (:x event) (:y event))]
-                (on-ui-click app hit)
-                (cond (on-scrollbar? app (:x event)) (on-scrollbar-click app (:y event))
+    (if-let [app (and (:window app) (on-window-event app event))]
+      app
+      (case (:type event)
+        :quit   (assoc app :quit? true)
+        :text   (on-text app now (:text event))
+        ;; Normal mode has no use for the input method's marked text.
+        :composition (if (insert? app) (compose app now (:text event) (:cursor event)) app)
+        ;; While composing, keys and clicks belong to the input method, and the
+        ;; layout shows the composition, so its positions aren't the document's.
+        :key    (cond composing? app
+                      (= :command (:mode app)) (on-command-key app now (:key event))
+                      :else (on-key app now (:key event) (:mod event 0)))
+        ;; The scroll bar leaves the document alone, so it works while composing.
+        ;; Boxes take the clicks on them, over the text and the scroll bar.
+        :click  (if-let [hit (ui-hit app (:x event) (:y event))]
+                  (on-ui-click app hit)
+                  (cond (on-scrollbar? app (:x event)) (on-scrollbar-click app (:y event))
+                        composing? app
+                        :else (on-click app now (:x event) (:y event)
+                                        (:mod event 0) (:clicks event 1))))
+        :drag   (cond (:grab app) (on-thumb-drag app (:y event))
                       composing? app
-                      :else (on-click app now (:x event) (:y event)
-                                      (:mod event 0) (:clicks event 1))))
-      :drag   (cond (:grab app) (on-thumb-drag app (:y event))
-                    composing? app
-                    :else (on-drag app now (:x event) (:y event)))
-      :release (cond-> (dissoc app :dragging? :drag-word :drag-point :grab)
-                 (:grab app) (assoc :dirty? true))
-      :move   (-> (hover app (boolean (on-scrollbar? app (:x event))))
-                  (assoc :ui-hover? (some? (ui-hit app (:x event) (:y event)))))
-      :leave  (-> (hover app false) (dissoc :ui-hover?))
-      :tick   (autoscroll app now)
-      :wheel  (on-wheel app (:dy event))
-      :focus  (assoc app :focused? (:focused? event) :blink-from now :dirty? true)
-      :opened (load-file app now event)
-      :save-chosen (if-let [error (:error event)]
-                     (assoc app :message (str "Can't save: " error) :dirty? true)
-                     (write-file app (:path event)))
-      :expose (assoc app :dirty? true)
-      app)))
+                      :else (on-drag app now (:x event) (:y event)))
+        :release (cond-> (dissoc app :dragging? :drag-word :drag-point :grab)
+                   (:grab app) (assoc :dirty? true))
+        :move   (-> (hover app (boolean (on-scrollbar? app (:x event))))
+                    (assoc :ui-hover? (some? (ui-hit app (:x event) (:y event)))))
+        :leave  (-> (hover app false) (dissoc :ui-hover?))
+        :tick   (autoscroll app now)
+        :wheel  (on-wheel app (:dy event))
+        :focus  (assoc app :focused? (:focused? event) :blink-from now :dirty? true)
+        :opened (load-file app now event)
+        :save-chosen (if-let [error (:error event)]
+                       (assoc app :message (str "Can't save: " error) :dirty? true)
+                       (write-file app (:path event)))
+        :expose (assoc app :dirty? true)
+        app))))
 
 ;; ---------------------------------------------------------------- drawing
 
@@ -976,7 +1017,7 @@
         [x1 k1] (layout/caret L next true)]
     (if (and (< pos next) (= k k1) (not= x x1))
       [(min x x1) (max x x1)]
-      [x (+ x (px app (/ (:font-size app) 2)))])))
+      [x (+ x (px app (/ (:editor-font-size app) 2)))])))
 
 (defn- text-caret-rect
   "A bar in insert mode, a block in normal mode."
@@ -994,9 +1035,9 @@
 
 (defn- command-caret-rect
   "A bar at the end of the command line."
-  [{:keys [status] :as app}]
-  (let [{:keys [caret-top caret-height]} (:metrics status)
-        {:keys [length] :as ln} (status-line app (status-text app))
+  [{:keys [ui] :as app}]
+  (let [{:keys [caret-top caret-height]} (:metrics ui)
+        {:keys [length] :as ln} (face-line ui (status-text app))
         x (ct/offset-for-index ln length)]
     [(+ (px app (:margin app)) (long (Math/floor x)))
      (+ (text-height app) (px app (:status-padding app)) caret-top)
@@ -1015,11 +1056,13 @@
     (and (< y (+ m (view-height app))) (> (+ y h) m))))
 
 (defn- caret-blinking?
-  "The caret shows while focused and nothing is selected; a selection
+  "The caret shows while focused, with no window open, and nothing
+  selected; a selection
   replaces it. Scrolled out of view, it has nothing to blink. On the
   command line, it always shows."
   [app]
   (and (:focused? app)
+       (not (:window app))
        (or (command? app)
            (and (nil? (ed/selection (:doc app))) (caret-in-view? app)))))
 
@@ -1039,9 +1082,9 @@
 
 (defn pointer
   "The mouse cursor the pointer should show: :arrow over the scroll bar
-  or a box, else :text."
+  or a box, or while a window is open, else :text."
   [app]
-  (if (or (:hover? app) (:grab app) (:ui-hover? app)) :arrow :text))
+  (if (or (:hover? app) (:grab app) (:ui-hover? app) (:window app)) :arrow :text))
 
 (defn needs-draw? [app now]
   (or (:dirty? app) (not= (caret-visible? app now) (:drawn-phase app))))
@@ -1099,42 +1142,37 @@
     (sdl/set-render-draw-color renderer r g b 255)
     (sdl/render-fill-rect renderer (sdl/set-frect! (:frect scratch) x y w h))))
 
-(defn- status-width
-  "How wide `text` is in the status bar, in render pixels."
-  [app text]
-  (face-width (:status app) text))
-
 (defn- draw-status-text!
   "`text` in the status bar, starting at render pixel `x`."
   [app text x]
-  (let [{:keys [renderer scratch status status-textures]} app
-        {:keys [line]} (status-line app text)
+  (let [{:keys [renderer scratch ui ui-textures]} app
+        color (:status-foreground app)
+        {:keys [line]} (face-line ui text)
         {:keys [texture width height pad] base :baseline}
-        (textures/fetch! status-textures renderer text line (:status-foreground app))]
+        (textures/fetch! ui-textures renderer [color text] line color)]
     (sdl/render-texture renderer texture ffi/null
                         (sdl/set-frect! (:frect scratch) (- x pad)
                                         (+ (text-height app) (px app (:status-padding app))
-                                           (get-in status [:metrics :baseline]) (- base))
+                                           (get-in ui [:metrics :baseline]) (- base))
                                         width height))))
 
 (defn- draw-status-bar!
   "The bar along the bottom: the mode, a message or the command line on
   the left, and the file on the right, unless the left runs into it."
   [app]
-  (let [{:keys [renderer scratch status-textures]} app
+  (let [{:keys [renderer scratch]} app
         [w] (:size app)
         m (px app (:margin app))
         [r g b] (:status-background app)
         left  (status-text app)
         right (status-file app)
-        right-x (- w m (status-width app right))]
+        right-x (- w m (ui-width app right))]
     (sdl/set-render-draw-color renderer r g b 255)
     (sdl/render-fill-rect renderer (sdl/set-frect! (:frect scratch) 0 (text-height app)
                                                    w (status-height app)))
     (draw-status-text! app left m)
-    (when (< (+ m (status-width app left) m) right-x)
-      (draw-status-text! app right right-x))
-    (textures/end-frame! status-textures)))
+    (when (< (+ m (ui-width app left) m) right-x)
+      (draw-status-text! app right right-x))))
 
 (defn- set-clip!
   "Clip drawing to [x y w h], or with nil not at all."
@@ -1154,18 +1192,16 @@
       (when (and (< x0 x1) (< y0 y1)) [x0 y0 (- x1 x0) (- y1 y0)]))))
 
 (defn- draw-ui-text!
-  "One line of `text` in `rect` [x y w h], in the face `font` names,
-  clipped to the rect and to `clip`: centred vertically, and with `centre?`
-  horizontally."
-  [app text font [x y w h :as rect] color centre? clip]
+  "One line of `text` in `rect` [x y w h], in the UI font, clipped to the
+  rect and to `clip`: centred vertically, and with `centre?` horizontally."
+  [app text [x y w h :as rect] color centre? clip]
   (when-let [visible (and (seq text) (intersect clip rect))]
-    (let [{:keys [renderer scratch ui-textures]} app
-          f (ui-face app font)
-          {:keys [line-height baseline]} (:metrics f)
-          {:keys [line]} (face-line f text)
+    (let [{:keys [renderer scratch ui ui-textures]} app
+          {:keys [line-height baseline]} (:metrics ui)
+          {:keys [line]} (face-line ui text)
           {:keys [texture width height pad] base :baseline}
-          (textures/fetch! ui-textures renderer [font color text] line color)
-          x (if centre? (+ x (quot (- w (face-width f text)) 2)) x)]
+          (textures/fetch! ui-textures renderer [color text] line color)
+          x (if centre? (+ x (quot (- w (face-width ui text)) 2)) x)]
       (set-clip! app visible)
       (sdl/render-texture renderer texture ffi/null
                           (sdl/set-frect! (:frect scratch) (- x pad)
@@ -1188,7 +1224,6 @@
                   bw (px app (:border st 0))
                   border (or (:border-color st) (:ui-border app))
                   color (or (:color st) (:foreground app))
-                  font (:font st :ui)
                   bg (or (:background st) (when (= :field (:kind node)) (:ui-field-background app)))]]
       (when bg (fill! bg x y w h))
       (when (pos? bw)
@@ -1197,9 +1232,9 @@
         (fill! border x (+ y bw) bw (- h bw bw))
         (fill! border (- (+ x w) bw) (+ y bw) bw (- h bw bw)))
       (case (:kind node)
-        :label    (draw-ui-text! app (str (:text node)) font [cx cy cw ch] color false clip)
-        :button   (draw-ui-text! app (str (:text node)) font [cx cy cw ch] color true clip)
-        :field    (draw-ui-text! app (str (ui-value app node)) font [cx cy cw ch] color false clip)
+        :label    (draw-ui-text! app (str (:text node)) [cx cy cw ch] color false clip)
+        :button   (draw-ui-text! app (str (:text node)) [cx cy cw ch] color true clip)
+        :field    (draw-ui-text! app (str (ui-value app node)) [cx cy cw ch] color false clip)
         :checkbox (when (ui-value app node)
                     (fill! (or (:color st) (:ui-accent app)) cx cy cw ch))
         nil))))

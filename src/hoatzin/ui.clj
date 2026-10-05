@@ -18,9 +18,7 @@
     :width :height       outer size; otherwise the content's, plus insets
     :padding             n, [vertical horizontal] or [top right bottom left]
     :border              width; :border-color, :background [r g b]
-    :color               text colour
-    :font                which of the app's fonts text is set in: :ui (the
-                         default) or :status, the status bar's monospace
+    :color               text colour, in the app's UI font
     :position            :absolute takes the node out of its parent's flow
                          and places it at its :left :top :right :bottom
                          (any of them) inside the parent's border; with
@@ -37,8 +35,8 @@
     :align-self          to override its parent's :align
   Text is one line; it doesn't wrap. Children may overflow their parent.
 
-  Placing is pure: given a context {:scale density, :text-size (fn [s font]
-  -> [w h] in pixels)}, `place` turns a node and a rect into a flat vector of
+  Placing is pure: given a context {:scale density, :text-size (fn [s] -> [w h]
+  in pixels)}, `place` turns a node and a rect into a flat vector of
   {:node :rect :content} in paint order, every rect [x y w h] in pixels.
   hoatzin.app draws that vector and hit-tests it with `hit`.")
 
@@ -85,7 +83,7 @@
 (defn- content-size
   "The [w h] pixels a node's content wants, inside its insets."
   [ctx node st]
-  (let [text-size #((:text-size ctx) % (:font st :ui))]
+  (let [text-size (:text-size ctx)]
     (case (:kind node)
       (:label :button) (text-size (str (:text node)))
       :field    [(px ctx field-width) (second (text-size ""))]

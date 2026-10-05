@@ -181,3 +181,11 @@
     (t/matches-golden? "command-hints" (t/render! s))
     (t/type! s "w")
     (t/matches-golden? "command-hints-filtered" (t/render! s))))
+
+(deftest ^:integration settings
+  ;; the settings window over the text, inset by the margin
+  (with-session [s]
+    (t/type! s hoatzin-text)
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "settings")
+    (t/matches-golden? "settings" (t/render! s))))

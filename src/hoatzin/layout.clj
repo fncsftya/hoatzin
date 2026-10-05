@@ -20,12 +20,14 @@
 
 ;; ---------------------------------------------------------------- metrics
 
+(def line-spacing "Line height, as a multiple of the font's." 1.3)
+
 (defn metrics
   "Fixed per-font line metrics, in whole pixels so lines land on the grid."
   [{:keys [ascent descent leading]}]
   (let [a  (long (Math/ceil ascent))
         d  (long (Math/ceil descent))
-        lh (long (Math/ceil (* 1.3 (+ a d (max 0.0 leading)))))
+        lh (long (Math/ceil (* line-spacing (+ a d (max 0.0 leading)))))
         gap (quot (- lh a d) 2)]
     {:line-height  lh
      :baseline     (+ gap a)           ; from the line's top

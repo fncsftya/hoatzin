@@ -799,8 +799,10 @@
     (is (= 1 (:dialogs @s)) ":o is :open")
     (t/command! s "op")
     (is (= 2 (:dialogs @s)))
+    (t/command! s "sa")
+    (is (= [nil] (:save-dialogs @s)) ":sa is :save")
     (t/command! s "s")
-    (is (= [nil] (:save-dialogs @s)) ":s is :save")
+    (is (= "Ambiguous command: s (save, settings)" (:message (t/app s))))
     (t/command! s "opener")
     (is (= "Not an editor command: opener" (:message (t/app s))) "more than the name is not a prefix")))
 
@@ -980,14 +982,14 @@
     (mapv #(mapv :text (:children %)) children)))
 
 (deftest command-hints
-  (with-session [s :mode nil]
+  (with-session [s :mode nil :width 600]
     (is (nil? (hints s)) "none outside the command line")
     (t/type! s ":")
-    (is (= [["open"] ["quit"] ["save"] ["write"]] (hints s))
+    (is (= [["open"] ["quit"] ["save"] ["settings"] ["write"]] (hints s))
         "every command, alphabetically, on one row while they fit")
-    (t/type! s "s")
+    (t/type! s "sa")
     (is (= [["save"]] (hints s)) "only those the text begins")
-    (t/type! s "ave!")
+    (t/type! s "ve!")
     (is (= [["save"]] (hints s)) "a trailing ! still names the command")
     (t/press! s sdl/K-BACKSPACE)
     (t/press! s sdl/K-BACKSPACE)
@@ -996,10 +998,54 @@
     (t/press! s sdl/K-ESCAPE)
     (is (nil? (hints s)) "gone with the command line"))
   (testing "in two rows, down then across, when they don't fit on one"
-    (with-session [s :mode nil :width 160]
+    (with-session [s :mode nil :width 220]
       (t/type! s ":")
-      (is (= [["open" "quit"] ["save" "write"]] (hints s)))))
+      (is (= [["open" "quit"] ["save" "settings"]] (hints s)))))
   (testing "no more than two rows: the columns that don't fit are left out"
     (is (= [["a" "b"] ["c" "d"]] (#'app/hint-columns ["a" "b" "c" "d" "e" "f"] 10 5 25)))
     (is (= [["a"] ["b"] ["c"]] (#'app/hint-columns ["a" "b" "c"] 10 5 40)))
     (is (= [["a" "b"]] (#'app/hint-columns ["a" "b" "c"] 10 5 1)) "always one column")))
+
+(defn- settings-box
+  "The settings window's placed box, or nil when it is closed."
+  [s]
+  (some #(when (= "Settings" (:text (first (get-in % [:node :children])))) %)
+        (:float-places (t/app s))))
+
+(defn- settings-values
+  "What the settings window's fields show, by :id."
+  [s]
+  (into {} (keep #(when (= :field (get-in % [:node :kind]))
+                    [(get-in % [:node :id]) (get-in % [:node :value])]))
+        (:float-places (t/app s))))
+
+(deftest settings-window
+  (with-session [s :mode :normal]
+    (is (nil? (settings-box s)) "closed to begin with")
+    (t/command! s "settings")
+    (let [{[x y w h] :rect} (settings-box s)
+          m (* 2 (:margin (t/app s)))
+          [sw sh] (:size (t/app s))]
+      (is (= [m m] [x y]) "inset by the margin")
+      (is (= (- sw m m) w) "the window's width")
+      (is (< (+ y h) (- sh m)) "above the status bar"))
+    (is (= {:settings/editor-family (:editor-family (t/app s))
+            :settings/editor-size   "20"
+            :settings/ui-family     "Menlo"
+            :settings/ui-size       "13"
+            :settings/theme         "default"
+            :settings/line-height   "1.3"}
+           (settings-values s)))
+    (is (= :arrow (app/pointer (t/app s))))
+    (is (not (app/caret-visible? (t/app s) (:now @s))) "the caret is hidden")
+    (testing "the text takes no input while it is open"
+      (t/type! s "i:x")
+      (t/press! s sdl/K-RIGHT)
+      (t/click! s 30.0 30.0)
+      (is (= :normal (:mode (t/app s))))
+      (is (= {:text "" :caret 0} (t/doc s)))
+      (is (some? (settings-box s))))
+    (t/press! s sdl/K-ESCAPE)
+    (is (nil? (settings-box s)) "escape closes it")
+    (t/type! s "i")
+    (is (= :insert (:mode (t/app s))) "and the keys reach the editor again")))
