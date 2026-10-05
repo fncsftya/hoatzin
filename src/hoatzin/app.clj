@@ -15,7 +15,9 @@
   caret and select, `i` enters :insert mode, and the caret is a block. In
   :insert mode typing edits the text, and escape goes back to :normal.
   `:` starts a command line (:command mode) in the status bar; return runs
-  it, escape abandons it, and tab completes the command's name. A command
+  it, escape abandons it, and tab completes the command's name. While it is
+  open, a box above the status bar lists the commands that what is typed
+  could still complete to. A command
   runs from any prefix that begins no other, so `:w` is `:write`. Commands:
     :open                           choose a file and load it
     :write                          save the file (choosing where, if it
@@ -133,7 +135,8 @@
 ;;                                         the window, last on top
 ;;   :ui-values                            interactive boxes' values, by :id
 ;;   :block-places :float-places           where they are, as `place-blocks` and
-;;                                         `place-floats` say
+;;                                         `place-floats` say; the floats placed
+;;                                         include the command line's hints
 ;;   :ui :ui-textures                      text in boxes: its face, its textures
 ;;   :ui-hover?                            the pointer is over a box
 ;;   :size :scroll                         output size and scroll, in pixels
@@ -232,8 +235,9 @@
   (str (or (file-name path) "[No Name]") (when modified? " [+]")))
 
 (def ^:private status-lines-kept
-  "How many status texts are kept set as lines."
-  8)
+  "How many texts in the status bar's font are kept set as lines: its own,
+  and the command hints'."
+  64)
 
 (def ^:private ui-lines-kept
   "How many texts in boxes are kept set as lines: more than are on screen."
@@ -262,12 +266,18 @@
   (some-> ui-textures textures/clear!)
   (some-> ui release-face!))
 
+(defn- ui-face
+  "The face a box's style's :font names: :status, or else :ui."
+  [app font]
+  (if (= font :status) (:status app) (:ui app)))
+
 (defn- ui-context
-  "What hoatzin.ui places boxes with: text in the UI face, one line high."
+  "What hoatzin.ui places boxes with: text one line high in its face."
   [app]
-  (let [f (:ui app)
-        lh (get-in f [:metrics :line-height])]
-    {:scale (:density app) :text-size (fn [s] [(face-width f s) lh])}))
+  {:scale (:density app)
+   :text-size (fn [s font]
+                (let [f (ui-face app font)]
+                  [(face-width f s) (get-in f [:metrics :line-height])]))})
 
 (defn- shown-pos
   "Where document position `pos` is in the display text: past the
@@ -308,14 +318,17 @@
   [app {:keys [id value]}]
   (get (:ui-values app) id value))
 
+(declare command-hints)
+
 (defn- place-floats
   "The floats placed in the window, in render pixels: in a box as big as
-  it, which lays out those in flow down its left edge."
+  it, which lays out those in flow down its left edge. The command line's
+  hints, if any, go on top."
   [app]
-  (if (seq (:floats app))
+  (if-let [floats (seq (cond-> (:floats app) (command-hints app) (conj (command-hints app))))]
     (let [[w h] (:size app)]
       (subvec (ui/place (ui-context app)
-                        {:kind :box :style {:align :start} :children (:floats app)}
+                        {:kind :box :style {:align :start} :children (vec floats)}
                         [0 0 w h])
               1))
     []))
@@ -519,6 +532,7 @@
   (assoc app :follow? true :dirty? true :blink-from now))
 
 (defn- insert? [app] (= :insert (:mode app)))
+(defn- command? [app] (= :command (:mode app)))
 
 (defn- edit
   "Apply `f` to the document; normal mode leaves it alone."
@@ -786,12 +800,17 @@
     [typed]
     (filterv #(str/starts-with? % typed) (sort (keys commands)))))
 
+(defn- parse-command
+  "The command line as [command force?], `force?` being a trailing `!`."
+  [line]
+  (let [typed  (str/trim line)
+        force? (str/ends-with? typed "!")]
+    [(str/trim (cond-> typed force? (subs 0 (dec (count typed))))) force?]))
+
 (defn- run-command
   "Run the command line, back in normal mode."
   [app now]
-  (let [typed   (str/trim (:command app))
-        force?  (str/ends-with? typed "!")
-        command (str/trim (cond-> typed force? (subs 0 (dec (count typed)))))
+  (let [[command force?] (parse-command (:command app))
         app     (leave-command app now)
         names   (command-names command)]
     (cond
@@ -800,6 +819,50 @@
       (seq names)        (assoc app :message (str "Ambiguous command: " command
                                                   " (" (str/join ", " names) ")"))
       :else              (assoc app :message (str "Not an editor command: " command)))))
+
+(def ^:private hint-gap "Points between the columns of command hints." 16)
+(def ^:private hint-padding "Points above and below the command hints." 4)
+(def ^:private hint-space "Points between the command hints and the status bar." 4)
+(def ^:private hint-rows "The most rows of command hints shown." 2)
+
+(defn- hint-columns
+  "`names` in columns, read down each and then across, filling no more
+  than `hint-rows` rows: on one row while they fit across `avail` pixels
+  in columns `col-w` wide and `gap` apart, else on as many columns as fit,
+  leaving out those that don't."
+  [names col-w gap avail]
+  (let [fit  (max 1 (quot (+ avail gap) (+ col-w gap)))
+        rows (if (<= (count names) fit) 1 hint-rows)]
+    (mapv vec (partition-all rows (take (* rows fit) names)))))
+
+(defn- command-hints
+  "While the command line is open, a float across the window just above
+  the status bar, listing the commands that what is typed begins,
+  alphabetically, in the status bar's font and in line with its text; nil
+  when it begins none."
+  [app]
+  (when (command? app)
+    (let [[typed] (parse-command (:command app))
+          names (filterv #(str/starts-with? % typed) (sort (keys commands)))]
+      (when (seq names)
+        (let [d       (:density app)
+              [w]     (:size app)
+              m       (px app (:margin app))
+              col-w   (reduce max (map #(face-width (:status app) %) names))
+              columns (hint-columns names col-w (px app hint-gap) (- w (* 2 m)))
+              label   (fn [name] {:kind :label :text name
+                                  :style {:color (:status-foreground app) :font :status}})]
+          ;; The side padding, with the border, is the margin: the names
+          ;; line up with the command line's text.
+          {:kind :box
+           :style {:position :absolute :left 0 :right 0
+                   :bottom (+ (/ (status-height app) d) hint-space)
+                   :direction :row :gap hint-gap :border 1
+                   :padding [hint-padding (- (:margin app) 1)]
+                   :background (:status-background app) :border-color (:ui-border app)}
+           :children (mapv (fn [col] {:kind :box :style {:width (/ col-w d)}
+                                      :children (mapv label col)})
+                           columns)})))))
 
 (defn- shared-start [a b]
   (subs a 0 (count (take-while true? (map = a b)))))
@@ -914,8 +977,6 @@
     (if (and (< pos next) (= k k1) (not= x x1))
       [(min x x1) (max x x1)]
       [x (+ x (px app (/ (:font-size app) 2)))])))
-
-(defn- command? [app] (= :command (:mode app)))
 
 (defn- text-caret-rect
   "A bar in insert mode, a block in normal mode."
@@ -1093,16 +1154,18 @@
       (when (and (< x0 x1) (< y0 y1)) [x0 y0 (- x1 x0) (- y1 y0)]))))
 
 (defn- draw-ui-text!
-  "One line of `text` in `rect` [x y w h], clipped to it and to `clip`:
-  centred vertically, and with `centre?` horizontally."
-  [app text [x y w h :as rect] color centre? clip]
+  "One line of `text` in `rect` [x y w h], in the face `font` names,
+  clipped to the rect and to `clip`: centred vertically, and with `centre?`
+  horizontally."
+  [app text font [x y w h :as rect] color centre? clip]
   (when-let [visible (and (seq text) (intersect clip rect))]
-    (let [{:keys [renderer scratch ui ui-textures]} app
-          {:keys [line-height baseline]} (:metrics ui)
-          {:keys [line]} (face-line ui text)
+    (let [{:keys [renderer scratch ui-textures]} app
+          f (ui-face app font)
+          {:keys [line-height baseline]} (:metrics f)
+          {:keys [line]} (face-line f text)
           {:keys [texture width height pad] base :baseline}
-          (textures/fetch! ui-textures renderer [color text] line color)
-          x (if centre? (+ x (quot (- w (face-width ui text)) 2)) x)]
+          (textures/fetch! ui-textures renderer [font color text] line color)
+          x (if centre? (+ x (quot (- w (face-width f text)) 2)) x)]
       (set-clip! app visible)
       (sdl/render-texture renderer texture ffi/null
                           (sdl/set-frect! (:frect scratch) (- x pad)
@@ -1125,6 +1188,7 @@
                   bw (px app (:border st 0))
                   border (or (:border-color st) (:ui-border app))
                   color (or (:color st) (:foreground app))
+                  font (:font st :ui)
                   bg (or (:background st) (when (= :field (:kind node)) (:ui-field-background app)))]]
       (when bg (fill! bg x y w h))
       (when (pos? bw)
@@ -1133,9 +1197,9 @@
         (fill! border x (+ y bw) bw (- h bw bw))
         (fill! border (- (+ x w) bw) (+ y bw) bw (- h bw bw)))
       (case (:kind node)
-        :label    (draw-ui-text! app (str (:text node)) [cx cy cw ch] color false clip)
-        :button   (draw-ui-text! app (str (:text node)) [cx cy cw ch] color true clip)
-        :field    (draw-ui-text! app (str (ui-value app node)) [cx cy cw ch] color false clip)
+        :label    (draw-ui-text! app (str (:text node)) font [cx cy cw ch] color false clip)
+        :button   (draw-ui-text! app (str (:text node)) font [cx cy cw ch] color true clip)
+        :field    (draw-ui-text! app (str (ui-value app node)) font [cx cy cw ch] color false clip)
         :checkbox (when (ui-value app node)
                     (fill! (or (:color st) (:ui-accent app)) cx cy cw ch))
         nil))))

@@ -3,7 +3,7 @@
             [hoatzin.ui :as ui]))
 
 ;; Text 7 px a character and 10 px high, at 1 px a point.
-(def ctx {:scale 1.0 :text-size (fn [s] [(* 7 (count s)) 10])})
+(def ctx {:scale 1.0 :text-size (fn [s _] [(* 7 (count s)) 10])})
 
 (defn- rects
   "The placed rects, by node :id."

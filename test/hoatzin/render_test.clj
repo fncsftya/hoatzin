@@ -170,3 +170,14 @@
                                   :children [{:kind :label :text "Float"}]}])
                 app/settle))
     (t/matches-golden? "boxes" (t/render! s))))
+
+(deftest ^:integration command-hints
+  ;; the commands `:` could begin, in a box above the status bar; typing
+  ;; narrows them down
+  (with-session [s]
+    (t/type! s hoatzin-text)
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s ":")
+    (t/matches-golden? "command-hints" (t/render! s))
+    (t/type! s "w")
+    (t/matches-golden? "command-hints-filtered" (t/render! s))))

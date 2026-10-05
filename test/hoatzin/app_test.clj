@@ -971,3 +971,35 @@
                                                        :width 100 :height 100}}])
       (t/click! s 300.0 300.0)
       (is (= 3 (t/caret s)) "the click didn't reach the text"))))
+
+(defn- hints
+  "The command hints shown, as columns of names."
+  [s]
+  (when-let [{:keys [children]} (some #(when (= :row (get-in % [:node :style :direction])) (:node %))
+                                      (:float-places (t/app s)))]
+    (mapv #(mapv :text (:children %)) children)))
+
+(deftest command-hints
+  (with-session [s :mode nil]
+    (is (nil? (hints s)) "none outside the command line")
+    (t/type! s ":")
+    (is (= [["open"] ["quit"] ["save"] ["write"]] (hints s))
+        "every command, alphabetically, on one row while they fit")
+    (t/type! s "s")
+    (is (= [["save"]] (hints s)) "only those the text begins")
+    (t/type! s "ave!")
+    (is (= [["save"]] (hints s)) "a trailing ! still names the command")
+    (t/press! s sdl/K-BACKSPACE)
+    (t/press! s sdl/K-BACKSPACE)
+    (t/type! s "x")
+    (is (nil? (hints s)) "none when the text begins no command")
+    (t/press! s sdl/K-ESCAPE)
+    (is (nil? (hints s)) "gone with the command line"))
+  (testing "in two rows, down then across, when they don't fit on one"
+    (with-session [s :mode nil :width 160]
+      (t/type! s ":")
+      (is (= [["open" "quit"] ["save" "write"]] (hints s)))))
+  (testing "no more than two rows: the columns that don't fit are left out"
+    (is (= [["a" "b"] ["c" "d"]] (#'app/hint-columns ["a" "b" "c" "d" "e" "f"] 10 5 25)))
+    (is (= [["a"] ["b"] ["c"]] (#'app/hint-columns ["a" "b" "c"] 10 5 40)))
+    (is (= [["a" "b"]] (#'app/hint-columns ["a" "b" "c"] 10 5 1)) "always one column")))
