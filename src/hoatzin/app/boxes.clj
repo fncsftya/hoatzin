@@ -2,7 +2,8 @@
   "Boxes (see hoatzin.lib.ui) shown with the text: blocks, in the text
   below a paragraph, and floats, above everything. Adding them, and where
   they are placed, and finding them there."
-  (:require [hoatzin.app.command :as command]
+  (:require [hoatzin.app.buffers-window :as buffers-window]
+            [hoatzin.app.command :as command]
             [hoatzin.app.display :refer [shown-pos]]
             [hoatzin.app.face :refer [ui-context]]
             [hoatzin.app.geometry :refer [view-height]]
@@ -77,6 +78,7 @@
   (if-let [floats (seq (cond-> (:floats app)
                          (= :settings (:window app)) (conj (settings-window/window app))
                          (= :help (:window app))     (conj (help-window/window app))
+                         (= :buffers (:window app))  (conj (buffers-window/window app))
                          (command/hints app)         (conj (command/hints app))))]
     (let [[w h] (:size app)]
       (subvec (ui/place (ui-context app)

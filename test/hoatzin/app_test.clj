@@ -4,6 +4,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [hoatzin.app :as app]
+            [hoatzin.app.buffers :as buffers]
             [hoatzin.app.command :as command]
             [hoatzin.app.dropdown :as dropdown]
             [hoatzin.app.geometry :as geo]
@@ -784,14 +785,24 @@
     (t/command! s "")
     (is (nil? (:message (t/app s))) "an empty command does nothing")))
 
-(deftest the-opened-file-replaces-the-buffer
+(defn- buffer-names
+  "The buffers' names, in order."
+  [s]
+  (let [bs (buffers/listing (t/app s))]
+    (mapv (buffers/names bs) (map :buffer-id bs))))
+
+(deftest the-opened-file-is-visited-in-a-buffer-of-its-own
   (with-session [s]
-    (t/type! s "scratch")
+    (is (= ["scratch"] (buffer-names s)) "a session starts with the scratch buffer")
+    (t/type! s "notes")
     (t/send! s {:type :opened :path "/birds/hoatzin.txt" :text "one\r\ntwo\rthree\n"})
     (is (= {:text "one\ntwo\nthree\n" :caret 0} (t/doc s)) "with line endings normalized")
     (is (= "/birds/hoatzin.txt" (:path (t/app s))))
+    (is (= "/birds" (:dir (t/app s))) "its directory is the working directory")
     (is (= "\"hoatzin.txt\" 3 lines" (:message (t/app s))))
-    (is (zero? (:scroll (t/app s))))))
+    (is (zero? (:scroll (t/app s))))
+    (is (= ["scratch" "hoatzin.txt"] (buffer-names s)))
+    (is (= "notes" (str (:text (:doc (first (buffers/listing (t/app s))))))) "the scratch buffer keeps its text")))
 
 (deftest a-file-that-cannot-be-read-leaves-the-buffer-alone
   (with-session [s]
@@ -856,14 +867,42 @@
     (is (:quit? (t/app s)))))
 
 (deftest q-refuses-to-quit-with-unsaved-changes
+  (with-session [s :mode :normal]
+    (t/send! s {:type :opened :path "/birds/hoatzin.txt" :text "one\n"})
+    (t/type! s "i")
+    (t/type! s "zero")
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "new")
+    (t/command! s "q")
+    (is (not (:quit? (t/app s))) "though the buffer shown has none")
+    (is (= "Unsaved changes in \"hoatzin.txt\" (add ! to override)" (:message (t/app s))))
+    (t/type! s "i")
+    (t/type! s "two")
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "q")
+    (is (= "Unsaved changes in \"hoatzin.txt\", \"untitled\" (add ! to override)"
+           (:message (t/app s))))
+    (t/command! s "q!")
+    (is (:quit? (t/app s)))))
+
+(deftest the-scratch-buffer-does-not-stop-a-quit
   (with-session [s]
     (t/type! s "zero")
     (t/press! s sdl/K-ESCAPE)
+    (is (:modified? (t/app s)))
     (t/command! s "q")
-    (is (not (:quit? (t/app s))))
-    (is (some? (:message (t/app s))))
-    (t/command! s "q!")
-    (is (:quit? (t/app s)))))
+    (is (:quit? (t/app s))))
+  (testing "unless it has been saved to a file"
+    (with-session [s]
+      (t/type! s "zero")
+      (t/press! s sdl/K-ESCAPE)
+      (t/command! s "w")
+      (t/send! s {:type :save-chosen :path "/birds/zero.txt"})
+      (t/type! s "i")
+      (t/type! s "!")
+      (t/press! s sdl/K-ESCAPE)
+      (t/command! s "q")
+      (is (not (:quit? (t/app s)))))))
 
 (deftest write-without-a-path-asks-where
   (with-session [s]
@@ -929,6 +968,208 @@
     (t/render! s)
     (t/send! s {:type :save-chosen :path "/birds/x.txt"})
     (is (app/needs-draw? (t/app s) (:now @s)) "saving clears [+]")))
+
+;; ---------------------------------------------------------------- buffers
+
+(defn- open! [s path text] (t/send! s {:type :opened :path path :text text}))
+
+(deftest switching-buffers-keeps-each-ones-state
+  (with-session [s :mode :normal]
+    (open! s "/birds/a.txt" "alpha\nbeta\n")
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "i")
+    (t/type! s "x")
+    (t/press! s sdl/K-ESCAPE)
+    (open! s "/fish/b.txt" "bream")
+    (is (= "bream" (t/text s)))
+    (is (= "/fish" (:dir (t/app s))))
+    (is (not (:modified? (t/app s))))
+    (open! s "/birds/a.txt" "alpha\nbeta\n")
+    (is (= "alpha\nxbeta\n" (t/text s)) "opening a file visited already switches to its buffer")
+    (is (= 7 (t/caret s)) "with the caret where it was")
+    (is (:modified? (t/app s)))
+    (is (= "/birds" (:dir (t/app s))) "and its directory")
+    (is (= ["scratch" "a.txt" "b.txt"] (buffer-names s)) "and no new buffer")
+    (t/type! s "u")
+    (is (= "alpha\nbeta\n" (t/text s)) "each buffer keeps its own undo")))
+
+(deftest buffers-of-the-same-name
+  (with-session [s :mode :normal]
+    (open! s "/birds/notes.txt" "")
+    (open! s "/fish/notes.txt" "")
+    (t/command! s "new")
+    (t/command! s "new")
+    (is (= ["scratch" "notes.txt" "notes.txt<2>" "untitled" "untitled<2>"] (buffer-names s)))))
+
+(deftest new-starts-an-empty-buffer
+  (with-session [s :mode :normal :dir "/home"]
+    (t/type! s "i")
+    (t/type! s "scratch text")
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "new")
+    (is (= "" (t/text s)))
+    (is (nil? (:path (t/app s))))
+    (is (= "/home" (:dir (t/app s))) "in the directory of the buffer it was made from")
+    (is (= ["scratch" "untitled"] (buffer-names s)))
+    (t/command! s "w")
+    (is (= ["/home"] (:save-dialogs @s)) "saving it starts in its directory")
+    (t/send! s {:type :save-chosen :path "/birds/new.txt"})
+    (is (= "/birds" (:dir (t/app s))) "and once saved, it is in its file's")
+    (is (= ["scratch" "new.txt"] (buffer-names s)) "and named for it")))
+
+(deftest close-closes-the-buffer
+  (with-session [s :mode :normal]
+    (open! s "/birds/a.txt" "alpha")
+    (open! s "/birds/b.txt" "beta")
+    (t/type! s "i")
+    (t/type! s "x")
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "close")
+    (is (= "\"b.txt\" has unsaved changes (add ! to override)" (:message (t/app s))))
+    (is (= ["scratch" "a.txt" "b.txt"] (buffer-names s)))
+    (t/command! s "close!")
+    (is (= ["scratch" "a.txt"] (buffer-names s)))
+    (is (= "alpha" (t/text s)) "the buffer before it is shown")
+    (is (= "Closed \"b.txt\"" (:message (t/app s))))
+    (t/command! s "buffers")
+    (t/press! s sdl/K-HOME)
+    (t/press! s sdl/K-RETURN)
+    (t/command! s "close")
+    (is (= ["a.txt"] (buffer-names s)) "even the scratch buffer can be closed")
+    (is (= "alpha" (t/text s)) "the first shows the one after it")
+    (t/command! s "close")
+    (is (= ["scratch"] (buffer-names s)) "closing the last leaves a new scratch buffer")
+    (is (= "" (t/text s)))))
+
+(deftest revert-reads-the-file-again
+  (with-session [s :mode :normal]
+    (swap! s assoc-in [:files "/birds/a.txt"] "alpha\n")
+    (open! s "/birds/a.txt" "alpha\n")
+    (t/press! s sdl/K-RIGHT)
+    (t/press! s sdl/K-RIGHT)
+    (t/type! s "i")
+    (t/type! s "xyz")
+    (t/press! s sdl/K-ESCAPE)
+    (swap! s assoc-in [:files "/birds/a.txt"] "alpha\nbeta\r\n")
+    (t/command! s "revert")
+    (is (= "alpha\nbeta\n" (t/text s)) "as it is on disk now")
+    (is (not (:modified? (t/app s))))
+    (is (= 5 (t/caret s)) "the caret stays where it was")
+    (is (= "Reverted \"a.txt\" 2 lines" (:message (t/app s))))
+    (t/type! s "u")
+    (is (= "alxyzpha\n" (t/text s)) "undo brings back what it replaced")
+    (swap! s update :files dissoc "/birds/a.txt")
+    (t/command! s "revert")
+    (is (= "Can't revert a.txt: No such file" (:message (t/app s))))
+    (is (= "alxyzpha\n" (t/text s)))))
+
+(deftest revert-warns-without-a-file
+  (with-session [s :mode :normal]
+    (t/command! s "revert")
+    (is (= "\"scratch\" has no file to revert to" (:message (t/app s))))
+    (t/command! s "new")
+    (t/command! s "revert")
+    (is (= "\"untitled\" has no file to revert to" (:message (t/app s))))))
+
+(deftest cd-chooses-the-buffers-directory
+  (with-session [s :mode :normal :dir "/home"]
+    (t/command! s "open")
+    (is (= ["/home"] (:open-dialogs @s)) "the open dialog starts in the working directory")
+    (t/command! s "cd")
+    (is (= ["/home"] (:dir-dialogs @s)) "so does the directory dialog")
+    (t/send! s {:type :dir-chosen :path "/birds"})
+    (is (= "/birds" (:dir (t/app s))))
+    (is (= "Directory /birds" (:message (t/app s))))
+    (t/command! s "open")
+    (is (= ["/home" "/birds"] (:open-dialogs @s)))
+    (open! s "/fish/b.txt" "bream")
+    (is (= "/fish" (:dir (t/app s))) "opening a file goes to its directory")
+    (t/command! s "buffers")
+    (t/press! s sdl/K-UP)
+    (t/press! s sdl/K-RETURN)
+    (is (= "/birds" (:dir (t/app s))) "and switching buffers to the buffer's")
+    (t/send! s {:type :dir-chosen :error "no dialogs here"})
+    (is (= "Can't change directory: no dialogs here" (:message (t/app s))))
+    (is (= "/birds" (:dir (t/app s))))))
+
+(deftest file-dialogs-start-where-the-last-one-chose
+  (with-session [s :mode :normal :dir "/home"]
+    (open! s "/fish/b.txt" "bream")
+    (t/command! s "buffers")
+    (t/press! s sdl/K-HOME)
+    (t/press! s sdl/K-RETURN)
+    (is (= "/home" (:dir (t/app s))) "back in the scratch buffer")
+    (t/command! s "open")
+    (is (= ["/fish"] (:open-dialogs @s)) "the open dialog starts where the last chose, for any buffer")
+    (t/command! s "new")
+    (t/command! s "save")
+    (is (= ["/fish"] (:save-dialogs @s)) "so does the save dialog")
+    (t/send! s {:type :save-chosen :path "/birds/new.txt"})
+    (t/command! s "open")
+    (is (= ["/fish" "/birds"] (:open-dialogs @s)) "saving chooses a directory too")
+    (t/send! s {:type :opened :path "/trees/secret.txt" :error "Permission denied"})
+    (t/command! s "open")
+    (is (= "/trees" (last (:open-dialogs @s))) "even a file that couldn't be read")
+    (t/command! s "save")
+    (is (= "/birds/new.txt" (last (:save-dialogs @s))) "a buffer's file comes first, saving")
+    (t/command! s "cd")
+    (t/send! s {:type :dir-chosen :path "/rocks"})
+    (t/command! s "open")
+    (is (= "/rocks" (last (:open-dialogs @s))) "and so does :cd")))
+
+(defn- buffer-rows
+  "The buffers window's rows, placed: [index rect]."
+  [s]
+  (keep #(when-let [i (get-in % [:node :buffer-row])] [i (:rect %)]) (:float-places (t/app s))))
+
+(defn- centre [[x y w h]] [(+ x (quot w 2)) (+ y (quot h 2))])
+
+(deftest the-buffers-window
+  (with-session [s :mode :normal]
+    (open! s "/birds/a.txt" "alpha")
+    (open! s "/birds/b.txt" "beta")
+    (t/command! s "buffers")
+    (is (= :buffers (:window (t/app s))))
+    (is (= 2 (:buffers-active (t/app s))) "on the current buffer")
+    (is (= [0 1 2] (map first (buffer-rows s))))
+    (t/type! s "i")
+    (is (= :normal (:mode (t/app s))) "the window takes the input")
+    (t/press! s sdl/K-UP)
+    (is (= 1 (:buffers-active (t/app s))))
+    (t/press! s sdl/K-RETURN)
+    (is (nil? (:window (t/app s))) "return closes it")
+    (is (= "alpha" (t/text s)) "and switches to the buffer it is on")
+    (t/command! s "buffers")
+    (let [[x y] (centre (second (first (buffer-rows s))))]
+      (t/send! s {:type :move :x x :y y})
+      (is (= 0 (:buffers-active (t/app s))) "it is on the buffer under the pointer")
+      (t/click! s x y))
+    (is (nil? (:window (t/app s))) "a click closes it")
+    (is (= "scratch" (buffers/buffer-name (t/app s))) "and switches to the buffer clicked")
+    (t/command! s "buffers")
+    (t/press! s sdl/K-ESCAPE)
+    (is (nil? (:window (t/app s))) "escape closes it")
+    (is (= "scratch" (buffers/buffer-name (t/app s))) "and stays put")))
+
+(deftest the-buffers-window-scrolls
+  (with-session [s :mode :normal :height 200]
+    (dotimes [i 20] (open! s (str "/birds/" i ".txt") ""))
+    (t/command! s "buffers")
+    (let [rows   #(map first (buffer-rows s))
+          [_ h]  (:size (t/app s))
+          shown  (count (rows))]
+      (is (< 1 shown 21))
+      (is (= 20 (last (rows))) "scrolled to show the current buffer")
+      (is (every? (fn [[_ [_ y _ rh]]] (<= (+ y rh) h)) (buffer-rows s)) "within the window")
+      (t/press! s sdl/K-HOME)
+      (is (= 0 (first (rows))))
+      (t/send! s {:type :wheel :dy -1})
+      (is (= 1 (first (rows))) "the wheel scrolls it")
+      (t/press! s sdl/K-PAGEDOWN)
+      (is (= shown (:buffers-active (t/app s))))
+      (t/press! s sdl/K-END)
+      (is (= 20 (:buffers-active (t/app s))))
+      (is (= 20 (last (rows)))))))
 
 ;; ---------------------------------------------------------------- boxes
 
@@ -998,10 +1239,12 @@
     (mapv #(mapv :text (:children %)) children)))
 
 (deftest command-hints
-  (with-session [s :mode nil :width 600]
+  (with-session [s :mode nil :width 1000]
     (is (nil? (hints s)) "none outside the command line")
     (t/type! s ":")
-    (is (= [["open"] ["quit"] ["save"] ["settings"] ["write"]] (hints s))
+    (is (= [["buffers"] ["cd"] ["close"] ["new"] ["open"] ["quit"] ["revert"] ["save"]
+            ["settings"] ["write"]]
+           (hints s))
         "every command, alphabetically, on one row while they fit")
     (t/type! s "sa")
     (is (= [["save"]] (hints s)) "only those the text begins")
@@ -1016,7 +1259,7 @@
   (testing "in two rows, down then across, when they don't fit on one"
     (with-session [s :mode nil :width 220]
       (t/type! s ":")
-      (is (= [["open" "quit"] ["save" "settings"]] (hints s)))))
+      (is (= [["buffers" "cd"] ["close" "new"]] (hints s)))))
   (testing "no more than two rows: the columns that don't fit are left out"
     (is (= [["a" "b"] ["c" "d"]] (#'command/hint-columns ["a" "b" "c" "d" "e" "f"] 10 5 25)))
     (is (= [["a"] ["b"] ["c"]] (#'command/hint-columns ["a" "b" "c"] 10 5 40)))

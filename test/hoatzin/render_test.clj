@@ -185,6 +185,21 @@
     (t/type! s "w")
     (t/matches-golden? "command-hints-filtered" (t/render! s))))
 
+(deftest ^:integration buffers
+  ;; the buffers window over the text: the current buffer marked, the one
+  ;; it is on highlighted, the unsaved one with [+], and each one's file
+  ;; or directory dimmed
+  (with-session [s :mode nil :dir "/home/hoatzin"]
+    (t/send! s {:type :opened :path "/birds/hoatzin.txt" :text hoatzin-text})
+    (t/type! s "i")
+    (t/type! s "Note: ")
+    (t/press! s sdl/K-ESCAPE)
+    (t/send! s {:type :opened :path "/fish/notes.txt" :text "Bream."})
+    (t/command! s "new")
+    (t/command! s "buffers")
+    (t/press! s sdl/K-UP)
+    (t/matches-golden? "buffers" (t/render! s))))
+
 (deftest ^:integration settings
   ;; the settings window over the text, inset by the margin
   (with-session [s]

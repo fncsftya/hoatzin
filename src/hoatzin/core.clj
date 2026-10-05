@@ -14,10 +14,11 @@
 ;; and wakes the event loop with a user event; `decode` reads the file.
 
 (defn- file-dialogs
-  "{:open! f :save! g :take! h}: `open!` shows the open dialog and
-  (`save!` path) the save dialog, starting at `path` if it is not nil,
-  unless a dialog is already showing. `take!` answers the choice reported,
-  once, as {:dialog :open|:save} with :path p or :error e, or nil."
+  "{:open! f :save! g :dir! h :take! i}: (`open!` dir) shows the open
+  dialog, (`save!` path) the save dialog and (`dir!` dir) the folder
+  dialog, each starting at the path it is given if it is not nil, unless a
+  dialog is already showing. `take!` answers the choice reported, once, as
+  {:dialog :open|:save|:dir} with :path p or :error e, or nil."
   [window]
   (let [state (atom {:showing nil})
         done  (fn [_ filelist _]
@@ -30,22 +31,29 @@
                   (ffi/with-alloc [ev sdl/EVENT-SIZE]
                     (ffi/write ev :uint sdl/EVENT-USER sdl/O-event-type)
                     (sdl/push-event ev))))
-        cb (ffi/callback (ffi/global-arena) done [:pointer :pointer :int] :void :collect-safe)]
-    {:open! (fn []
-              (when-not (:showing @state)
-                (swap! state assoc :showing :open)
-                (sdl/show-open-file-dialog cb ffi/null window ffi/null 0 ffi/null false)))
-     ;; SDL may read the start location until it calls back, which frees it.
+        cb (ffi/callback (ffi/global-arena) done [:pointer :pointer :int] :void :collect-safe)
+        ;; SDL may read the start location until it calls back, which frees it.
+        show (fn [dialog path f]
+               (when-not (:showing @state)
+                 (let [location (some-> path ffi/string->ptr)]
+                   (swap! state assoc :showing dialog :location location)
+                   (f (or location ffi/null)))))]
+    {:open! (fn [dir]
+              (show :open dir #(sdl/show-open-file-dialog cb ffi/null window ffi/null 0 % false)))
      :save! (fn [path]
-              (when-not (:showing @state)
-                (let [location (some-> path ffi/string->ptr)]
-                  (swap! state assoc :showing :save :location location)
-                  (sdl/show-save-file-dialog cb ffi/null window ffi/null 0
-                                             (or location ffi/null)))))
+              (show :save path #(sdl/show-save-file-dialog cb ffi/null window ffi/null 0 %)))
+     :dir!  (fn [dir]
+              (show :dir dir #(sdl/show-open-folder-dialog cb ffi/null window % false)))
      :take! (fn []
               (let [{:keys [choice]} @state]
                 (swap! state dissoc :choice)
                 choice))}))
+
+(defn- read-file
+  "Read `path`: {:text s}, or {:error e}, why it could not."
+  [path]
+  (try {:text (slurp path)}
+       (catch Exception e {:error (ex-message e)})))
 
 (defn- read-choice
   "The event for a file chosen in a file dialog: for the open dialog,
@@ -53,9 +61,9 @@
   [{:keys [dialog path error]}]
   (cond
     (= dialog :save) (if error {:type :save-chosen :error error} {:type :save-chosen :path path})
+    (= dialog :dir)  (if error {:type :dir-chosen :error error} {:type :dir-chosen :path path})
     error            {:type :opened :error error}
-    :else            (try {:type :opened :path path :text (slurp path)}
-                          (catch Exception e {:type :opened :path path :error (ex-message e)}))))
+    :else            (merge {:type :opened :path path} (read-file path))))
 
 (defn- write-file
   "Write string `s` to `path`: nil, or why it could not."
@@ -176,7 +184,10 @@
                                     :set-clipboard-fn #(sdl/set-clipboard-text %)
                                     :open-dialog-fn (:open! dialogs)
                                     :save-dialog-fn (:save! dialogs)
+                                    :dir-dialog-fn (:dir! dialogs)
+                                    :read-file-fn read-file
                                     :write-file-fn write-file
+                                    :dir          (System/getProperty "user.dir")
                                     :settings     (:settings loaded)
                                     :save-settings-fn #(settings/write-file! settings-file %)
                                     :font-families-fn ct/font-families

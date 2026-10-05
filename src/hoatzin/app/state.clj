@@ -49,6 +49,15 @@
 ;;   :command                              the command line's text, after `:`
 ;;   :message                              shown in the status bar until the
 ;;                                         next keystroke
+;;   :buffers :next-buffer-id              every buffer, and the number the
+;;                                         next one made is to have: see
+;;                                         hoatzin.app.buffers
+;;   :buffer-id :buffer-name :scratch?     the current buffer's number, its
+;;                                         name while it has no file, and
+;;                                         whether it is the scratch buffer
+;;   :dir                                  its directory, if known
+;;   :dialog-dir                           the directory the last file
+;;                                         dialog chose in, for any buffer
 ;;   :path                                 the file loaded or saved, if any
 ;;   :saved                                the text as it is in that file
 ;;   :modified? :compared                  whether the text differs from
@@ -82,7 +91,11 @@
 ;;                                         the thumb is held :grab px below its top
 ;;   :composition                          {:text :cursor} while composing, or nil
 ;;   :window                               the window open over the text
-;;                                         (:settings), or nil
+;;                                         (:settings, :help or :buffers), or
+;;                                         nil
+;;   :help-scroll                          the help window's scroll, in rows
+;;   :buffers-active :buffers-scroll       the buffers window's buffer, and
+;;                                         its scroll in rows
 ;;   :blocks                               boxes in the text (see
 ;;                                         hoatzin.lib.ui), by id: each sits
 ;;                                         below the paragraph holding the

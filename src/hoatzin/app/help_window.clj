@@ -40,9 +40,14 @@
      ["cmd+v" "paste at the caret"]
      ["ctrl+a / ctrl+e" "start / end of the line"]]]
    ["Command line"
-    [[":open" "choose a file and load it"]
-     [":write" "save the file"]
-     [":save" "choose where to save the file"]
+    [[":open" "choose a file and visit it in a buffer"]
+     [":write" "save the buffer"]
+     [":save" "choose where to save the buffer"]
+     [":buffers" "list the buffers, to switch to one"]
+     [":new" "start an empty buffer"]
+     [":close" "close the buffer (:close! to discard changes)"]
+     [":revert" "read the buffer's file again"]
+     [":cd" "choose the buffer's directory"]
      [":quit" "quit (:quit! to discard changes)"]
      [":settings" "show the settings"]]]])
 

@@ -10,7 +10,8 @@
   Clicking a dropdown gives it the focus and opens its list (see
   hoatzin.app.dropdown). With the focus, return, up, down or typing open
   it too; typing goes on into the list, to the option it begins."
-  (:require [hoatzin.app.boxes :refer [focusable-places focused-field ui-hit ui-value]]
+  (:require [hoatzin.app.boxes :refer [focusable-places focused-field hover ui-hit ui-value]]
+            [hoatzin.app.buffers-window :as buffers-window]
             [hoatzin.app.dropdown :as dropdown]
             [hoatzin.app.help-window :as help-window]
             [hoatzin.app.settings-window :as settings-window]
@@ -110,11 +111,22 @@
   boxes. The text takes nothing. nil for the events it leaves to the rest
   of the app."
   [app now event]
-  (case (:type event)
-    :key   (cond (= sdl/K-ESCAPE (:key event)) (close-window app)
-                 (= :help (:window app))       (help-window/on-key app (:key event))
-                 :else                         app)
-    :click (if-let [hit (ui-hit app (:x event) (:y event))] (on-ui-click app now hit) (blur app))
-    :wheel (if (= :help (:window app)) (help-window/on-wheel app (:dy event)) app)
-    (:text :composition :drag) app
-    nil))
+  (let [window (:window app)]
+    (case (:type event)
+      :key   (cond (= sdl/K-ESCAPE (:key event)) (close-window app)
+                   (= :help window)              (help-window/on-key app (:key event))
+                   (= :buffers window)           (buffers-window/on-key app now (:key event))
+                   :else                         app)
+      :click (if (= :buffers window)
+               (buffers-window/on-click app now (:x event) (:y event))
+               (if-let [hit (ui-hit app (:x event) (:y event))] (on-ui-click app now hit) (blur app)))
+      :wheel (case window
+               :help    (help-window/on-wheel app (:dy event))
+               :buffers (buffers-window/on-wheel app (:dy event))
+               app)
+      ;; the buffers window is on the buffer under the pointer
+      :move  (when (= :buffers window)
+               (-> (buffers-window/on-move app (:x event) (:y event))
+                   (hover (:x event) (:y event))))
+      (:text :composition :drag) app
+      nil)))

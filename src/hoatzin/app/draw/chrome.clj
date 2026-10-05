@@ -1,9 +1,9 @@
 (ns hoatzin.app.draw.chrome
   "Drawing what is around the text: the scroll bar at its right and the
   status bar along the bottom."
-  (:require [hoatzin.app.command :as command]
+  (:require [hoatzin.app.buffers :refer [buffer-name]]
+            [hoatzin.app.command :as command]
             [hoatzin.app.face :refer [face-line ui-width]]
-            [hoatzin.app.files :refer [file-name]]
             [hoatzin.app.geometry :refer [text-height status-height]]
             [hoatzin.app.scroll :refer [scrollbar]]
             [hoatzin.app.state :refer [px]]
@@ -41,10 +41,10 @@
         :else             (mode-labels mode)))
 
 (defn- status-file
-  "What the status bar says on its right: the file's name, and [+] while
-  the text differs from what is in it."
-  [{:keys [path modified?]}]
-  (str (or (file-name path) "[No Name]") (when modified? " [+]")))
+  "What the status bar says on its right: the buffer's name, and [+] while
+  the text differs from what is in its file."
+  [{:keys [modified?] :as app}]
+  (str (buffer-name app) (when modified? " [+]")))
 
 (defn- draw-status-text!
   "`text` in the status bar, starting at render pixel `x`."

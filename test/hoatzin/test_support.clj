@@ -159,25 +159,33 @@
   "A headless editor, `width` x `height` points at `density`, starting in
   `mode`: :insert unless given, so tests can type straight away, and nil
   for the editor's own default. A mutable
-  map in an atom: {:app :canvas :now :clipboard :dialogs :save-dialogs
-  :files :write-error :saved-settings :settings-error}; the editor reads
-  and writes :clipboard, counts the open dialogs it shows in :dialogs,
-  records the paths the save dialogs it shows start at in :save-dialogs,
-  and writes into :files, a map of path to text, unless there is a
-  :write-error to fail with. It saves its settings into :saved-settings,
-  unless there is a :settings-error to fail with.
+  map in an atom: {:app :canvas :now :clipboard :dialogs :open-dialogs
+  :save-dialogs :dir-dialogs :files :write-error :saved-settings
+  :settings-error}; the editor reads and writes :clipboard, counts the
+  open dialogs it shows in :dialogs, records the paths the open, save and
+  directory dialogs it shows start at in :open-dialogs, :save-dialogs and
+  :dir-dialogs, reads from :files, a map of path to text, and writes into
+  it, unless there is a :write-error to fail with. It saves its settings
+  into :saved-settings, unless there is a :settings-error to fail with.
+  `dir` is its working directory, nil unless given.
   Close with `close!`."
-  [& {:keys [width height density clipboard mode]
+  [& {:keys [width height density clipboard mode dir]
       :or   {width 400 height 300 density 2.0 clipboard "" mode :insert}}]
   (let [c (canvas (long (* width density)) (long (* height density)))
         s (atom {:canvas c :now 0 :clipboard clipboard :density density :dialogs 0
-                 :save-dialogs [] :files {}})]
+                 :open-dialogs [] :save-dialogs [] :dir-dialogs [] :files {}})]
     (swap! s assoc :app (app/create (cond-> {:renderer     (:renderer c)
                                              :density-fn   (constantly (double density))
                                              :clipboard-fn #(:clipboard @s)
                                              :set-clipboard-fn #(swap! s assoc :clipboard %)
-                                             :open-dialog-fn #(swap! s update :dialogs inc)
+                                             :open-dialog-fn #(swap! s (fn [st] (-> st (update :dialogs inc)
+                                                                                    (update :open-dialogs conj %))))
                                              :save-dialog-fn #(swap! s update :save-dialogs conj %)
+                                             :dir-dialog-fn #(swap! s update :dir-dialogs conj %)
+                                             :read-file-fn #(if-let [text (get-in @s [:files %])]
+                                                              {:text text}
+                                                              {:error "No such file"})
+                                             :dir          dir
                                              :write-file-fn
                                              (fn [path text]
                                                (or (:write-error @s)

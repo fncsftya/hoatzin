@@ -5,10 +5,14 @@
   Nothing here reads the OS event queue, the clock, the clipboard or files:
   the host passes time into `handle`/`draw!` and supplies :density-fn,
   :clipboard-fn (read the clipboard), :set-clipboard-fn (write it),
-  :open-dialog-fn (show a file dialog, whose file comes back as :opened),
-  :save-dialog-fn (show a save dialog starting at the path it is given, or
-  nil; the choice comes back as :save-chosen), :write-file-fn (write
-  string s to path p, returning nil, or why it could not),
+  :open-dialog-fn (show a file dialog starting in the directory it is
+  given, or nil; the file comes back as :opened), :save-dialog-fn (show a
+  save dialog starting at the path it is given, or nil; the choice comes
+  back as :save-chosen), :dir-dialog-fn (show a dialog choosing a
+  directory, starting in the one it is given, or nil; the choice comes
+  back as :dir-chosen), :read-file-fn (read path p, returning {:text s}, or
+  {:error e}, why it could not), :write-file-fn (write string s to path p,
+  returning nil, or why it could not),
   :save-settings-fn (persist the settings, as hoatzin.app.settings has them,
   returning nil, or why it could not) and :font-families-fn (the names of
   the fonts installed, as hoatzin.lib.coretext/font-families gives them).
@@ -21,15 +25,32 @@
   it, escape abandons it, and tab completes the command's name. While it is
   open, a box above the status bar lists the commands that what is typed
   could still complete to. A command
-  runs from any prefix that begins no other, so `:w` is `:write`. Commands:
-    :open                           choose a file and load it
-    :write                          save the file (choosing where, if it
-                                    has no path yet)
-    :save                           choose where to save the file, and save it
-    :quit                           quit the editor, unless there are unsaved
-                                    changes; `:quit!` quits regardless
+  runs from any prefix that begins no other, so `:w` is `:write`.
+
+  Each text is a buffer, after Emacs (see hoatzin.app.buffers): there is
+  always the scratch buffer to begin with, each file opened is visited in
+  a buffer of its own, and one buffer at a time is shown. Each has a
+  directory, the working directory while it is shown. The file dialogs
+  start where the last one chose, else in the working directory. Commands:
+    :open                           choose a file and visit it, in a new
+                                    buffer, or the one visiting it already
+    :write                          save the buffer (choosing where, if it
+                                    has no file yet)
+    :save                           choose where to save the buffer, and save it
+    :buffers                        list the buffers, over the text: return
+                                    or a click switches to one
+    :new                            start an empty buffer
+    :close                          close the buffer, unless it has unsaved
+                                    changes; `:close!` closes it regardless
+    :revert                         read the buffer's file again
+    :cd                             choose the buffer's directory
+    :quit                           quit the editor, unless a buffer has
+                                    unsaved changes; `:quit!` quits regardless
     :settings                       show the settings window, over the text
                                     until escape closes it
+
+  The scratch buffer's changes are its own: they don't stop a quit, or
+  its closing, unless it has been saved to a file.
 
   While a window is open, it takes the input: the text is left alone.
 
@@ -70,6 +91,8 @@
                                     may be missing, if the dialog failed)
     {:type :save-chosen :path p}    where the save dialog chose to save, or
     {:type :save-chosen :error e}   why the dialog failed
+    {:type :dir-chosen :path p}     the directory chosen, or
+    {:type :dir-chosen :error e}    why the dialog failed
     {:type :expose}                 the window needs repainting
     {:type :quit}
 
@@ -78,6 +101,7 @@
   described in hoatzin.app.state."
   (:require [jolt.ffi :as ffi]
             [hoatzin.app.boxes :as boxes]
+            [hoatzin.app.buffers :as buffers]
             [hoatzin.app.caret :as caret]
             [hoatzin.app.command :as command]
             [hoatzin.app.draw :as draw]
@@ -90,7 +114,6 @@
             [hoatzin.app.settings :as settings]
             [hoatzin.app.state :as state]
             [hoatzin.app.sync :as sync]
-            [hoatzin.lib.editor :as ed]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.lib.textures :as textures]))
 
@@ -99,36 +122,38 @@
 (defn create
   "A new, empty editor drawing with `:renderer`. Options (all but :renderer
   optional): :density-fn, :clipboard-fn, :set-clipboard-fn, :open-dialog-fn,
-  :save-dialog-fn, :write-file-fn, :save-settings-fn, :font-families-fn,
-  :now, :settings (the defaults unless given), :mode (:normal unless
-  given), :message, and any key of hoatzin.app.state/defaults.
+  :save-dialog-fn, :dir-dialog-fn, :read-file-fn, :write-file-fn,
+  :save-settings-fn, :font-families-fn, :now, :dir (the working
+  directory, if any), :settings (the defaults unless given), :mode
+  (:normal unless given), :message, and any key of
+  hoatzin.app.state/defaults. It has one buffer, the scratch buffer.
   Release it with `destroy!`."
-  [{:keys [now] :or {now 0} :as opts}]
-  (sync/settle (merge state/defaults
-                      {:density-fn   (constantly 1.0)
-                       :clipboard-fn (constantly "")
-                       :set-clipboard-fn (fn [_])
-                       :open-dialog-fn (fn [])
-                       :save-dialog-fn (fn [_])
-                       :write-file-fn (fn [_ _] "no file system")
-                       :save-settings-fn (fn [_])
-                       :font-families-fn (constantly [])
-                       :option-faces (atom {})
-                       :settings     settings/defaults
-                       :textures     (textures/cache)
-                       :ui-textures  (textures/cache)
-                       :blocks       {}
-                       :floats       []
-                       :ui-values    {}
-                       :scratch      {:frect (ffi/alloc sdl/frect) :irect (ffi/alloc sdl/rect)}
-                       :doc          ed/empty-doc
-                       :saved        (:text ed/empty-doc)
-                       :mode         :normal
-                       :scroll       0
-                       :focused?     true
-                       :blink-from   now
-                       :dirty?       true}
-                      (dissoc opts :now))))
+  [{:keys [now dir] :or {now 0} :as opts}]
+  (sync/settle (buffers/init
+                (merge state/defaults
+                       {:density-fn   (constantly 1.0)
+                        :clipboard-fn (constantly "")
+                        :set-clipboard-fn (fn [_])
+                        :open-dialog-fn (fn [_])
+                        :save-dialog-fn (fn [_])
+                        :dir-dialog-fn (fn [_])
+                        :read-file-fn (fn [_] {:error "no file system"})
+                        :write-file-fn (fn [_ _] "no file system")
+                        :save-settings-fn (fn [_])
+                        :font-families-fn (constantly [])
+                        :option-faces (atom {})
+                        :settings     settings/defaults
+                        :textures     (textures/cache)
+                        :ui-textures  (textures/cache)
+                        :floats       []
+                        :ui-values    {}
+                        :scratch      {:frect (ffi/alloc sdl/frect) :irect (ffi/alloc sdl/rect)}
+                        :mode         :normal
+                        :focused?     true
+                        :blink-from   now
+                        :dirty?       true}
+                       (dissoc opts :now :dir))
+                dir)))
 
 (defn destroy! [app]
   (sync/release-view! app)
@@ -174,8 +199,9 @@
       :tick   (mouse/autoscroll app now)
       :wheel  (scroll/on-wheel app now (:dy event))
       :focus  (assoc app :focused? (:focused? event) :blink-from now :dirty? true)
-      :opened (files/load-file app now event)
+      :opened (buffers/open-file app now event)
       :save-chosen (files/save-chosen app event)
+      :dir-chosen (buffers/dir-chosen app event)
       :expose (assoc app :dirty? true)
       app)))
 

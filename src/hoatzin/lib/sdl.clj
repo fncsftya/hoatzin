@@ -114,6 +114,8 @@
   [:pointer :pointer :pointer :pointer :int :pointer :bool] :void :blocking)
 (ffi/defcfn show-save-file-dialog "SDL_ShowSaveFileDialog"
   [:pointer :pointer :pointer :pointer :int :pointer] :void :blocking)
+(ffi/defcfn show-open-folder-dialog "SDL_ShowOpenFolderDialog"
+  [:pointer :pointer :pointer :pointer :bool] :void :blocking)
 
 (ffi/defcfn create-system-cursor "SDL_CreateSystemCursor" [:int] :pointer)
 (ffi/defcfn set-cursor           "SDL_SetCursor"          [:pointer] :bool)
