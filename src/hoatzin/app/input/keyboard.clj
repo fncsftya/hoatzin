@@ -5,6 +5,7 @@
   composition, and escape goes back to :normal."
   (:require [hoatzin.app.command :as command]
             [hoatzin.app.geometry :refer [caret-or view-height]]
+            [hoatzin.app.history :as history]
             [hoatzin.app.input.motion :refer [move-to move-on-line move-lines]]
             [hoatzin.app.state :refer [insert? touched enter-mode]]
             [hoatzin.lib.editor :as ed]
@@ -12,16 +13,97 @@
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.lib.text :as text]))
 
+(defn- change-of
+  "The [lo hi s] that `f` (ed/delete or ed/insert) does to `doc` with `args`."
+  [doc f args]
+  (if (= f ed/delete)
+    [(apply min args) (apply max args) ""]
+    (let [[lo hi] (or (ed/selection doc) [(:caret doc) (:caret doc)])]
+      [lo hi (first args)])))
+
 (defn- edit
-  "Apply `f` to the document; normal mode leaves it alone."
+  "Apply `f` (ed/delete or ed/insert) to the document, recording it for
+  undo; normal mode leaves it alone."
   [app now f & args]
   (if (insert? app)
-    (-> app (assoc :doc (apply f (:doc app) args) :goal-x nil :upstream? false) (touched now))
+    (let [old (:doc app)
+          [lo hi s] (change-of old f args)]
+      (-> app
+          (assoc :doc (apply f old args) :goal-x nil :upstream? false)
+          (history/record old lo hi s)
+          (touched now)))
     app))
 
-(defn- copy! [app]
-  (when-let [s (ed/selected-text (:doc app))]
-    ((:set-clipboard-fn app) s)))
+(defn- normal? [app] (= :normal (:mode app)))
+
+(defn- logical-line
+  "The [start end] positions of the line (up to its newline) holding `pos`."
+  [text pos]
+  (let [[_ start s] (text/line-at (text/of text) pos)]
+    [start (+ start (count s))]))
+
+(defn- open-line
+  "Start a new line below (or above) the caret's and insert there."
+  [app now above?]
+  (let [{:keys [text caret]} (:doc app)
+        [start end] (logical-line text caret)
+        pos (if above? start end)
+        old (ed/move (:doc app) pos)
+        doc (cond-> (ed/insert old "\n") above? (ed/move start))]
+    (-> app (assoc :doc doc :goal-x nil :upstream? false)
+        (history/record old pos pos "\n")
+        (touched now) (enter-mode now :insert))))
+
+(defn- select-with
+  "Select the range `f` finds around the caret. With a selection, extend
+  it to the end of the range `f` finds at the next non-whitespace after it."
+  [app now f]
+  (let [{:keys [text] :as doc} (:doc app)
+        n   (count text)
+        sel (ed/selection doc)
+        at  (if sel (ed/skip-space text (second sel)) (:caret doc))
+        [lo hi] (when (or (not sel) (< at n)) (f text (min at (max 0 (dec n)))))
+        [lo hi] (if sel [(first sel) hi] [lo hi])]
+    (if (and hi (< lo hi) (or (not sel) (> hi (second sel))))
+      (-> app (assoc :doc (ed/select (ed/move doc lo) hi) :goal-x nil :upstream? false)
+          (touched now))
+      app)))
+
+(defn- characters
+  "`n` characters, as a message says it."
+  [n]
+  (str n (if (= 1 n) " character" " characters")))
+
+(defn- copy!
+  "Copy the selection to the clipboard, and say so."
+  [app]
+  (if-let [s (ed/selected-text (:doc app))]
+    (do ((:set-clipboard-fn app) s)
+        (assoc app :message (str "Copied " (characters (count s))) :dirty? true))
+    app))
+
+(defn- cut!
+  "Cut the selection to the clipboard, and say so."
+  [app now]
+  (if-let [[lo hi] (ed/selection (:doc app))]
+    (-> (copy! app)
+        (assoc :doc (ed/delete (:doc app) lo hi) :goal-x nil :upstream? false
+               :message (str "Cut " (characters (- hi lo))))
+        (history/record (:doc app) lo hi "")
+        (touched now))
+    app))
+
+(defn- paste!
+  "Paste the clipboard at the caret, and say so."
+  [app now]
+  (let [s (text/normalize-newlines ((:clipboard-fn app)))]
+    (if (seq s)
+      (let [[lo hi] (or (ed/selection (:doc app)) [(get-in app [:doc :caret]) (get-in app [:doc :caret])])]
+        (-> app (assoc :doc (ed/insert (:doc app) s) :goal-x nil :upstream? false
+                       :message (str "Pasted " (characters (count s))))
+            (history/record (:doc app) lo hi s)
+            (touched now)))
+      app)))
 
 (defn on-key [app now key mod]
   (let [L      (:layout app)
@@ -30,6 +112,7 @@
         end    (count text)
         cmd?   (pos? (bit-and mod sdl/KMOD-GUI))
         shift? (pos? (bit-and mod sdl/KMOD-SHIFT))
+        ctrl?  (pos? (bit-and mod sdl/KMOD-CTRL))
         ;; Shift moves the caret and drags the selection along. Otherwise a
         ;; selection collapses: keys going back start from its start, keys
         ;; going forward from its end.
@@ -41,7 +124,9 @@
                        (move-on-line app now shift? k (layout/line-end L k)))
         page (max 1 (quot (view-height app) (layout/line-height L)))]
     (condp = key
-      sdl/K-ESCAPE    (if (insert? app) (enter-mode app now :normal) app)
+      sdl/K-ESCAPE    (cond-> app
+                        sel          (-> (assoc :doc (ed/move doc caret)) (touched now))
+                        (insert? app) (enter-mode now :normal))
       sdl/K-BACKSPACE (cond sel        (edit app now ed/delete (first sel) (second sel))
                             cmd?       (edit app now ed/delete (layout/line-start L (line-of caret)) caret)
                             (pos? caret) (edit app now ed/delete (layout/prev-position L caret) caret)
@@ -51,10 +136,10 @@
                         (edit app now ed/delete caret (layout/next-position L caret)))
       sdl/K-RETURN    (edit app now ed/insert "\n")
       sdl/K-KP-ENTER  (edit app now ed/insert "\n")
-      sdl/K-LEFT      (cond cmd?                   (to-line-start back)
+      sdl/K-LEFT      (cond cmd?                   (go (ed/prev-word text back))
                             (and sel (not shift?)) (go back)
                             :else                  (go (layout/prev-position L caret)))
-      sdl/K-RIGHT     (cond cmd?                   (to-line-end fwd)
+      sdl/K-RIGHT     (cond cmd?                   (go (ed/next-word text fwd))
                             (and sel (not shift?)) (go fwd)
                             :else                  (go (layout/next-position L caret)))
       sdl/K-HOME      (to-line-start back)
@@ -63,15 +148,13 @@
       sdl/K-DOWN      (if cmd? (go end) (move-lines app now shift? fwd 1))
       sdl/K-PAGEUP    (move-lines app now shift? back (- page))
       sdl/K-PAGEDOWN  (move-lines app now shift? fwd page)
-      sdl/K-A         (if cmd? (-> app (assoc :doc (ed/select-all doc) :goal-x nil) (touched now)) app)
-      sdl/K-C         (do (when cmd? (copy! app)) app)
-      sdl/K-X         (if (and cmd? sel (insert? app))
-                        (do (copy! app) (edit app now ed/delete (first sel) (second sel)))
-                        app)
-      sdl/K-V         (if cmd?
-                        (let [s (text/normalize-newlines ((:clipboard-fn app)))]
-                          (if (seq s) (edit app now ed/insert s) app))
-                        app)
+      sdl/K-A         (cond cmd?  (-> app (assoc :doc (ed/select-all doc) :goal-x nil) (touched now))
+                            ctrl? (if (insert? app) (to-line-start caret) app)
+                            :else app)
+      sdl/K-E         (if (and ctrl? (insert? app)) (to-line-end caret) app)
+      sdl/K-C         (if cmd? (copy! app) app)
+      sdl/K-X         (if (and cmd? (insert? app)) (cut! app now) app)
+      sdl/K-V         (if (and cmd? (insert? app)) (paste! app now) app)
       app)))
 
 (defn on-text
@@ -86,7 +169,35 @@
     :command (command/on-text app now text)
     (case text
       "i" (enter-mode app now :insert)
+      "a" (let [{:keys [text caret] :as doc} (:doc app)
+                pos (if-let [[_ hi] (ed/selection doc)]
+                      hi
+                      (if (< caret (count text)) (min (count text) (inc caret)) caret))
+                pos (if (and (not (ed/selection doc)) (= \newline (text/char-at (text/of text) caret)))
+                      caret
+                      pos)]
+            (-> (move-to app now false pos) (enter-mode now :insert)))
+      "A" (-> (move-to app now false (second (logical-line (:text (:doc app)) (:caret (:doc app)))))
+              (enter-mode now :insert))
+      "o" (open-line app now false)
+      "O" (open-line app now true)
+      "c" (copy! app)
+      "x" (cut! app now)
+      "p" (paste! app now)
+      "0" (move-to app now false (first (logical-line (:text (:doc app)) (:caret (:doc app)))))
+      "^" (let [{:keys [text caret]} (:doc app)
+                [start end] (logical-line text caret)
+                t (text/of text)]
+            (move-to app now false
+                     (loop [j start]
+                       (if (and (< j end) (Character/isWhitespace (text/char-at t j))) (recur (inc j)) j))))
+      "w" (select-with app now ed/word-range)
+      "s" (select-with app now ed/sentence-range)
       ":" (command/open-line app now)
+      "g" (command/open-goto app now)
+      "u" (history/undo app now)
+      "r" (history/redo app now)
+      "?" (assoc app :window :help :help-scroll 0 :dirty? true)
       app)))
 
 (defn compose
@@ -97,7 +208,8 @@
         (dissoc app :composition)
         (let [n (count text)
               app (if-let [[lo hi] (ed/selection (:doc app))]
-                    (assoc app :doc (ed/delete (:doc app) lo hi))
+                    (-> app (assoc :doc (ed/delete (:doc app) lo hi))
+                        (history/record (:doc app) lo hi ""))
                     app)]
           (assoc app :upstream? false :composition
                  {:text text :cursor (if (and cursor (<= 0 cursor n)) cursor n)})))

@@ -31,6 +31,7 @@
 (def K-ESCAPE    0x1b)
 (def K-TAB       0x09)
 (def K-A         0x61)
+(def K-E         0x65)
 (def K-C         0x63)
 (def K-V         0x76)
 (def K-X         0x78)
@@ -44,6 +45,7 @@
 (def K-UP        0x40000052)
 (def K-KP-ENTER  0x40000058)
 (def KMOD-SHIFT  0x0003)
+(def KMOD-CTRL   0x00c0)
 (def KMOD-GUI    0x0c00)
 
 (def BUTTON-LEFT 1)

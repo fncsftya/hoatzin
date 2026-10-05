@@ -83,3 +83,19 @@
       (is (= {:m 0 :n 2} (:marks (ed/delete d 0 2)))))
     (testing "unmarking the last mark leaves no :marks"
       (is (= {:text "abcdef" :caret 2} (plain (-> d (ed/unmark :m) (ed/unmark :n))))))))
+
+(deftest word-motion
+  (let [text "the  hoatzin, a\nbird"]
+    (is (= 5 (ed/next-word text 0)))
+    (is (= 16 (ed/next-word text 14)) "across a newline")
+    (is (= 20 (ed/next-word text 16)) "stops at the end")
+    (is (= 5 (ed/prev-word text 13)))
+    (is (= 0 (ed/prev-word text 3)))
+    (is (= 14 (ed/prev-word text 16)))))
+
+(deftest sentence-range
+  (let [text "One two. Three four! Five\n\nSix"]
+    (is (= [0 8] (ed/sentence-range text 0)))
+    (is (= [9 20] (ed/sentence-range text 12)))
+    (is (= [21 25] (ed/sentence-range text 23)) "a blank line ends one")
+    (is (= [27 30] (ed/sentence-range text 28)))))

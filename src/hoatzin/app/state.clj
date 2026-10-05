@@ -67,6 +67,9 @@
 ;;                                         texture cache
 ;;   :ctx :layout :laid-out                layout context, layout, its text
 ;;   :textures :scratch                    line texture cache, FFI scratch
+;;   :undo :undo-tail :undo-chain :mode-count
+;;                                         the edit history: see
+;;                                         hoatzin.app.history
 ;;   :doc :goal-x                          the document (see
 ;;                                         hoatzin.lib.editor); column for
 ;;                                         up/down
@@ -129,4 +132,4 @@
   (assoc app :follow? true :dirty? true :blink-from now))
 
 (defn enter-mode [app now mode]
-  (assoc app :mode mode :dirty? true :blink-from now))
+  (-> app (assoc :mode mode :dirty? true :blink-from now) (update :mode-count (fnil inc 0))))

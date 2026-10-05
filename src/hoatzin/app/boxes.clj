@@ -6,6 +6,7 @@
             [hoatzin.app.display :refer [shown-pos]]
             [hoatzin.app.face :refer [ui-context]]
             [hoatzin.app.geometry :refer [view-height]]
+            [hoatzin.app.help-window :as help-window]
             [hoatzin.app.settings-window :as settings-window]
             [hoatzin.app.state :refer [px]]
             [hoatzin.lib.editor :as ed]
@@ -75,6 +76,7 @@
   [app]
   (if-let [floats (seq (cond-> (:floats app)
                          (= :settings (:window app)) (conj (settings-window/window app))
+                         (= :help (:window app))     (conj (help-window/window app))
                          (command/hints app)         (conj (command/hints app))))]
     (let [[w h] (:size app)]
       (subvec (ui/place (ui-context app)

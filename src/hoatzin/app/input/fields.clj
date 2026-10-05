@@ -12,6 +12,7 @@
   it too; typing goes on into the list, to the option it begins."
   (:require [hoatzin.app.boxes :refer [focusable-places focused-field ui-hit ui-value]]
             [hoatzin.app.dropdown :as dropdown]
+            [hoatzin.app.help-window :as help-window]
             [hoatzin.app.settings-window :as settings-window]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.lib.ui :as ui]))
@@ -110,7 +111,10 @@
   of the app."
   [app now event]
   (case (:type event)
-    :key   (if (= sdl/K-ESCAPE (:key event)) (close-window app) app)
+    :key   (cond (= sdl/K-ESCAPE (:key event)) (close-window app)
+                 (= :help (:window app))       (help-window/on-key app (:key event))
+                 :else                         app)
     :click (if-let [hit (ui-hit app (:x event) (:y event))] (on-ui-click app now hit) (blur app))
-    (:text :composition :drag :wheel) app
+    :wheel (if (= :help (:window app)) (help-window/on-wheel app (:dy event)) app)
+    (:text :composition :drag) app
     nil))

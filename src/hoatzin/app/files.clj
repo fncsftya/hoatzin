@@ -6,6 +6,7 @@
   and writes the files (see the hoatzin.app ns doc)."
   (:refer-clojure :exclude [load-file])
   (:require [clojure.string :as str]
+            [hoatzin.app.history :as history]
             [hoatzin.app.state :refer [touched]]
             [hoatzin.lib.editor :as ed]
             [hoatzin.lib.text :as text]))
@@ -45,6 +46,7 @@
                    :blocks {}
                    :message (str "\"" file "\" " (file-lines t) " lines"))
             (dissoc :composition :dragging? :drag-word :drag-point)
+            history/reset
             (touched now))))))
 
 (defn write-file

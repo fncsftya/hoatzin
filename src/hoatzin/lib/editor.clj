@@ -113,3 +113,51 @@
 
 (defn select-all [{:keys [text] :as doc}]
   (select (move doc 0) (count text)))
+
+(defn- space? [t i] (not= :word (char-class (text/char-at t i))))
+
+(defn next-word
+  "The start of the word after position `pos`, or the end of the text."
+  [text pos]
+  (let [t (text/of text), n (count t)
+        j (loop [j pos] (if (and (< j n) (not (space? t j))) (recur (inc j)) j))]
+    (loop [j j] (if (and (< j n) (space? t j)) (recur (inc j)) j))))
+
+(defn prev-word
+  "The start of the word before position `pos`, or the start of the text."
+  [text pos]
+  (let [t (text/of text)
+        j (loop [j pos] (if (and (pos? j) (space? t (dec j))) (recur (dec j)) j))]
+    (loop [j j] (if (and (pos? j) (not (space? t (dec j)))) (recur (dec j)) j))))
+
+(defn sentence-range
+  "The [lo hi] sentence around position `i`: it ends at a `.`, `!` or `?`
+  followed by whitespace (or the end of the text), and at a blank line."
+  [text i]
+  (let [t (text/of text), n (count t)
+        end?  #(contains? #{\. \! \?} (text/char-at t %))
+        nl?   #(= \newline (text/char-at t %))
+        lo (loop [j (min i n)]
+             (cond (zero? j) 0
+                   (and (end? (dec j)) (or (= j n) (space? t j))) j
+                   (and (nl? (dec j)) (> j 1) (nl? (- j 2))) j
+                   :else (recur (dec j))))
+        lo (loop [j lo] (if (and (< j i) (< j n) (space? t j)) (recur (inc j)) j))
+        hi (loop [j (max lo i)]
+             (cond (>= j n) n
+                   (and (nl? j) (< (inc j) n) (nl? (inc j))) j
+                   (and (end? j) (or (= (inc j) n) (space? t (inc j)))) (inc j)
+                   :else (recur (inc j))))]
+    [lo hi]))
+
+(defn select-sentence
+  "Select the sentence around the character at `i`."
+  [{:keys [text] :as doc} i]
+  (let [[lo hi] (sentence-range text i)]
+    (select (move doc lo) hi)))
+
+(defn skip-space
+  "The first position at or after `pos` that is not whitespace (or a newline)."
+  [text pos]
+  (let [t (text/of text), n (count t)]
+    (loop [j pos] (if (and (< j n) (space? t j)) (recur (inc j)) j))))

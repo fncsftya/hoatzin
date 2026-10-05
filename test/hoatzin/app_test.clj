@@ -295,7 +295,7 @@
 (deftest arrows-collapse-the-selection
   (with-session [s]
     (t/type! s "one two three")
-    (t/press! s sdl/K-LEFT cmd)
+    (t/press! s sdl/K-HOME)
     (dotimes [_ 4] (t/press! s sdl/K-RIGHT))
     (dotimes [_ 3] (t/press! s sdl/K-RIGHT shift))   ; "two"
     (t/press! s sdl/K-LEFT)
@@ -466,7 +466,7 @@
       (is (= [wrap 0] [(t/caret s) (caret-row s)]) "and again is still there")
       (t/press! s sdl/K-HOME)
       (is (= 0 (t/caret s)) "home goes back to the start of the same line")
-      (t/press! s sdl/K-RIGHT cmd)
+      (t/press! s sdl/K-END)
       (t/press! s sdl/K-DOWN)
       (is (= 1 (caret-row s)) "down from there goes to the next line")
       (t/press! s sdl/K-UP)
@@ -476,7 +476,7 @@
       (t/press! s sdl/K-LEFT)
       (is (= [wrap 1] [(t/caret s) (caret-row s)])
           "arriving at the wrap point from the right puts it on the next line")
-      (t/press! s sdl/K-LEFT cmd)
+      (t/press! s sdl/K-HOME)
       (is (= wrap (t/caret s)) "whose start it is")
       (t/press! s sdl/K-RIGHT (bit-or cmd shift))
       (is (= (subs long-words wrap (layout/line-start (:layout (t/app s)) 2)) (t/selected s))
@@ -1416,3 +1416,210 @@
         (is (<= 0 y) (str h " " id))
         (is (<= (+ y lh) (geo/text-height (t/app s))) "above the status bar")
         (is (or (>= y (+ cy ch)) (<= (+ y lh) cy)) "not over its dropdown")))))
+
+(deftest normal-mode-insert-commands
+  (with-session [s :mode :normal]
+    (press-i! s)
+    (t/type! s "ab\ncd")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-UP cmd)
+    (t/type! s "a")
+    (is (= :insert (:mode (t/app s))))
+    (is (= 1 (t/caret s)) "a: after the character")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s "A")
+    (is (= 2 (t/caret s)) "A: end of line")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s "o")
+    (t/type! s "x")
+    (is (= "ab\nx\ncd" (t/text s)) "o: a line below")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s "O")
+    (t/type! s "y")
+    (is (= "ab\ny\nx\ncd" (t/text s)) "O: a line above")))
+
+(deftest normal-mode-selects-and-moves-by-word
+  (with-session [s :mode :normal]
+    (press-i! s)
+    (t/type! s "One two. Three four.")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-UP cmd)
+    (t/press! s sdl/K-RIGHT cmd)
+    (is (= 4 (t/caret s)) "cmd+right: next word")
+    (t/press! s sdl/K-LEFT cmd)
+    (is (= 0 (t/caret s)) "cmd+left: previous word")
+    (t/press! s sdl/K-RIGHT cmd)
+    (t/type! s "w")
+    (is (= "two." (t/selected s)))
+    (t/type! s "w")
+    (is (= "two. Three" (t/selected s)) "w again extends to the next word")
+    (t/type! s "s")
+    (is (= "two. Three four." (t/selected s)) "s with a selection extends to the next sentence")))
+
+(deftest s-selects-a-sentence-and-extends
+  (with-session [s :mode :normal]
+    (press-i! s)
+    (t/type! s "One two. Three four. Five.")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-UP cmd)
+    (t/type! s "s")
+    (is (= "One two." (t/selected s)))
+    (t/type! s "s")
+    (is (= "One two. Three four." (t/selected s)))))
+
+(deftest normal-mode-clipboard-and-line-keys
+  (with-session [s :mode :normal]
+    (press-i! s)
+    (t/type! s "  one two")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s "0")
+    (is (= 0 (t/caret s)))
+    (t/type! s "^")
+    (is (= 2 (t/caret s)))
+    (t/type! s "w")
+    (t/type! s "c")
+    (t/set-clipboard! s "x")
+    (t/type! s "c")
+    (t/type! s "x")
+    (is (= "   two" (t/text s)) "x cut the word")
+    (t/type! s "p")
+    (is (= "  one two" (t/text s)) "p pastes it back")
+    (is (= :normal (:mode (t/app s))))))
+
+(deftest ctrl-a-and-e-in-insert-mode
+  (with-session [s]
+    (t/type! s "one two")
+    (t/press! s sdl/K-A sdl/KMOD-CTRL)
+    (is (= 0 (t/caret s)))
+    (t/press! s sdl/K-E sdl/KMOD-CTRL)
+    (is (= 7 (t/caret s)))))
+
+(deftest g-goes-to-a-line
+  (with-session [s :mode :normal]
+    (press-i! s)
+    (t/type! s "one\ntwo\nthree")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s "g")
+    (is (= :command (:mode (t/app s))))
+    (t/type! s "2x")
+    (t/press! s sdl/K-RETURN)
+    (is (= :normal (:mode (t/app s))))
+    (is (= 4 (t/caret s)))
+    (t/type! s "g")
+    (t/type! s "99")
+    (t/press! s sdl/K-RETURN)
+    (is (= 8 (t/caret s)) "clamped to the last line")))
+
+(deftest question-mark-opens-the-help-window
+  (with-session [s :mode :normal]
+    (t/type! s "?")
+    (is (= :help (:window (t/app s))))
+    (t/type! s "i")
+    (is (= :normal (:mode (t/app s))) "the window takes the input")
+    (is (= "" (t/text s)))
+    (t/press! s sdl/K-ESCAPE)
+    (is (nil? (:window (t/app s))))))
+
+(deftest the-help-window-scrolls-and-fits
+  (with-session [s :mode :normal]
+    (t/resize! s 400 200)
+    (t/type! s "?")
+    (let [rows #(count (filter (comp :text :node) (:float-places (t/app s))))]
+      (t/press! s sdl/K-DOWN)
+      (is (= 1 (:help-scroll (t/app s))))
+      (t/press! s sdl/K-END)
+      (is (pos? (:help-scroll (t/app s))))
+      (t/press! s sdl/K-HOME)
+      (is (= 0 (:help-scroll (t/app s))))
+      (is (pos? (rows)))
+      (let [[_ h] (:size (t/app s))]
+        (is (every? (fn [{[_ y _ rh] :rect}] (<= (+ y rh) h)) (:float-places (t/app s)))
+            "nothing is placed below the window")))))
+
+(deftest escape-clears-the-selection
+  (with-session [s :mode :normal]
+    (press-i! s)
+    (t/type! s "one two")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-A cmd)
+    (is (some? (t/selected s)))
+    (t/press! s sdl/K-ESCAPE)
+    (is (nil? (t/selected s)))
+    (is (= :normal (:mode (t/app s))))))
+
+(deftest copy-cut-and-paste-say-so
+  (with-session [s]
+    (t/type! s "one two")
+    (t/press! s sdl/K-A cmd)
+    (t/press! s sdl/K-C cmd)
+    (is (= "Copied 7 characters" (:message (t/app s))))
+    (t/press! s sdl/K-X cmd)
+    (is (= "Cut 7 characters" (:message (t/app s))))
+    (is (= "" (t/text s)))
+    (t/press! s sdl/K-V cmd)
+    (is (= "Pasted 7 characters" (:message (t/app s))))
+    (is (= "one two" (t/text s)))
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s "w")
+    (t/type! s "x")
+    (is (= "Cut 3 characters" (:message (t/app s))))
+    (t/type! s "p")
+    (is (= "Pasted 3 characters" (:message (t/app s))))))
+
+(deftest undo-and-redo
+  (with-session [s :mode :normal]
+    (press-i! s)
+    (t/type! s "one")
+    (t/press! s sdl/K-ESCAPE)
+    (press-i! s)
+    (t/type! s " two")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s "u")
+    (is (= "one" (t/text s)) "typing in a mode undoes as one")
+    (t/type! s "u")
+    (is (= "" (t/text s)))
+    (t/type! s "u")
+    (is (= "No further undo information" (:message (t/app s))))
+    (t/type! s "r")
+    (is (= "one" (t/text s)))
+    (t/type! s "r")
+    (is (= "one two" (t/text s)))
+    (t/type! s "r")
+    (is (= "Nothing to redo" (:message (t/app s))))
+    (t/type! s "u")
+    (is (= "one" (t/text s)) "undo after redo goes back")))
+
+(deftest undo-chain-breaks-on-other-edits
+  (with-session [s :mode :normal]
+    (press-i! s)
+    (t/type! s "a")
+    (t/press! s sdl/K-ESCAPE)
+    (press-i! s)
+    (t/type! s "b")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s "u")
+    (t/type! s "u")
+    (is (= "" (t/text s)))
+    (t/type! s "i")
+    (t/type! s "c")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s "r")
+    (is (= "Nothing to redo" (:message (t/app s))) "an edit forgets the redos")
+    (t/type! s "u")
+    (is (= "" (t/text s)))
+    (t/type! s "u")
+    (is (= "a" (t/text s)) "a fresh undo undoes the undos")))
+
+(deftest undo-restores-cuts-and-pastes
+  (with-session [s :mode :normal]
+    (press-i! s)
+    (t/type! s "one two")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-A cmd)
+    (t/type! s "x")
+    (is (= "" (t/text s)))
+    (t/type! s "p")
+    (t/type! s "u")
+    (is (= "" (t/text s)))
+    (t/type! s "u")
+    (is (= "one two" (t/text s)))))

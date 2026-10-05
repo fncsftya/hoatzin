@@ -10,13 +10,16 @@
             [hoatzin.app.files :as files]
             [hoatzin.app.geometry :refer [status-height]]
             [hoatzin.app.settings-window :as settings-window]
-            [hoatzin.app.state :refer [px command? enter-mode]]
+            [hoatzin.app.state :refer [px command? enter-mode touched]]
+            [hoatzin.lib.editor :as ed]
+            [hoatzin.lib.text :as text]
             [hoatzin.lib.sdl :as sdl]))
 
 (defn line-text
-  "The command line as shown: its text after the `:`."
+  "The command line as shown: its text after the `:`, or after the prompt
+  for a line number."
   [app]
-  (str ":" (:command app)))
+  (str (if (:goto? app) "Go to line: " ":") (:command app)))
 
 ;; ---------------------------------------------------------------- commands
 
@@ -59,12 +62,36 @@
   [app now]
   (-> app (enter-mode now :command) (assoc :command "")))
 
+(defn open-goto
+  "Open the command line to ask for a line number."
+  [app now]
+  (assoc (open-line app now) :goto? true))
+
 (defn- leave-line [app now]
-  (-> app (enter-mode now :normal) (dissoc :command)))
+  (-> app (enter-mode now :normal) (dissoc :command :goto?)))
+
+(defn- goto-line
+  "Move the caret to the start of the 1-based line typed, clamped to the
+  text's lines; anything but a number leaves it where it is."
+  [app now]
+  (if-let [n (parse-long (str/trim (:command app)))]
+    (let [t (text/of (get-in app [:doc :text]))
+          k (-> n dec (max 0) (min (dec (text/line-count t))))]
+      (-> app
+          (assoc :doc (ed/move (:doc app) (text/line-start t k)) :goal-x nil :upstream? false)
+          (touched now)))
+    app))
+
+(declare run-command)
 
 (defn- run-line
   "Run the command line, back in normal mode."
   [app now]
+  (if (:goto? app)
+    (leave-line (goto-line app now) now)
+    (run-command app now)))
+
+(defn- run-command [app now]
   (let [[command force?] (parse-command (:command app))
         app     (leave-line app now)
         names   (command-names command)]
@@ -87,7 +114,8 @@
 (defn on-text
   "Typed text, onto the end of the command line."
   [app now text]
-  (-> app (update :command str text) (assoc :dirty? true :blink-from now)))
+  (let [text (if (:goto? app) (apply str (filter #(Character/isDigit ^char %) text)) text)]
+    (-> app (update :command str text) (assoc :dirty? true :blink-from now))))
 
 (defn on-key
   "A key on the command line. Other keys leave the document alone."
@@ -128,7 +156,7 @@
   alphabetically, in line with the status bar's text; nil
   when it begins none."
   [app]
-  (when (command? app)
+  (when (and (command? app) (not (:goto? app)))
     (let [[typed] (parse-command (:command app))
           names (names-beginning typed)]
       (when (seq names)
