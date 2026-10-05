@@ -72,3 +72,14 @@
 
 (deftest select-word
   (is (= {:text "one two" :anchor 4 :caret 7} (plain (ed/select-word (doc {:text "one two" :caret 0}) 5)))))
+
+(deftest marks
+  (let [d (-> (doc {:text "abcdef" :caret 2}) (ed/mark :m 2) (ed/mark :n 4))]
+    (testing "text typed at a mark goes after it; before one, pushes it on"
+      (is (= {:m 2 :n 6} (:marks (ed/insert d "XY")))))
+    (testing "deleting around a mark leaves it where the deletion was"
+      (is (= {:m 1 :n 1} (:marks (ed/delete d 1 5)))))
+    (testing "deleting before one pulls it back"
+      (is (= {:m 0 :n 2} (:marks (ed/delete d 0 2)))))
+    (testing "unmarking the last mark leaves no :marks"
+      (is (= {:text "abcdef" :caret 2} (plain (-> d (ed/unmark :m) (ed/unmark :n))))))))

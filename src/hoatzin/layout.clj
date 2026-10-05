@@ -242,6 +242,12 @@
          j (if (and upstream? (pos? j) (= u (:start (nth (:lines p) j)))) (dec j) j)]
      [(ct/offset-for-index (set-line L p j) u) (+ first-line j)])))
 
+(defn last-line
+  "The last visual line of the paragraph holding `pos`."
+  [L pos]
+  (let [{:keys [p first-line]} (para-at L pos)]
+    (+ first-line (dec (count (:lines p))))))
+
 (defn wrap-end?
   "Whether `pos` is the end of visual line `k` where its paragraph wraps
   onto the next line: a caret placed there for line `k` belongs upstream."

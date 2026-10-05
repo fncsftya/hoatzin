@@ -3,6 +3,7 @@
   See hoatzin.test-support for regenerating goldens."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest]]
+            [hoatzin.app :as app]
             [hoatzin.sdl :as sdl]
             [hoatzin.test-support :as t :refer [with-session]]))
 
@@ -145,3 +146,27 @@
     (t/send! s {:type :opened :path "/birds/hoatzin.txt"
                 :text (str hoatzin-text "\n\nIt eats leaves.\n")})
     (t/matches-golden? "opened-file" (t/render! s))))
+
+(deftest ^:integration boxes
+  ;; a block below the first paragraph, pushing the next down, and a float
+  ;; in the top right corner over the text
+  (with-session [s :height 360]
+    (t/type! s (str hoatzin-text "\n\nIt eats leaves."))
+    (swap! s update :app
+           #(-> %
+                (app/add-block :form 0
+                               {:kind :box
+                                :style {:border 1 :padding 6 :gap 6 :background [40 40 60]}
+                                :children [{:kind :label :text "Field notes"}
+                                           {:kind :box :style {:direction :row :gap 6 :align :center}
+                                            :children [{:kind :field :id :name :value "Opisthocomus"
+                                                        :style {:grow 1}}
+                                                       {:kind :checkbox :id :seen :value true}
+                                                       {:kind :button :id :save :text "Save"}]}]})
+                (app/set-floats [{:kind :box
+                                  :style {:position :absolute :top 8 :right 8 :padding [4 8]
+                                          :border 1 :background [60 50 70]
+                                          :border-color [200 140 120]}
+                                  :children [{:kind :label :text "Float"}]}])
+                app/settle))
+    (t/matches-golden? "boxes" (t/render! s))))

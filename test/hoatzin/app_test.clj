@@ -911,3 +911,63 @@
     (t/render! s)
     (t/send! s {:type :save-chosen :path "/birds/x.txt"})
     (is (app/needs-draw? (t/app s) (:now @s)) "saving clears [+]")))
+
+;; ---------------------------------------------------------------- boxes
+
+(defn- with-app! [s f & args]
+  (swap! s update :app #(app/settle (apply f % args)))
+  s)
+
+(def ^:private panel
+  {:kind :box :style {:height 50 :border 1 :padding 4 :direction :row :gap 4 :align :center}
+   :children [{:kind :label :text "Notes"}
+              {:kind :checkbox :id :done}]})
+
+(deftest blocks-make-room-in-the-text
+  (with-session [s]
+    (t/type! s "one\ntwo\nthree")
+    (let [lh (layout/line-height (:layout (t/app s)))
+          caret-y #(second (app/caret-rect (t/app s)))
+          y0 (caret-y)]
+      (with-app! s app/add-block :b 1 panel)
+      (is (= (+ y0 100) (caret-y)) "lines below the block move down by its height (2x density)")
+      (t/press! s sdl/K-UP cmd)
+      (is (= (- y0 (* 2 lh)) (caret-y)) "lines above it stay put")
+      (testing "a click below the block lands on the line under it"
+        (t/click! s 60.0 (+ y0 100 (quot lh 2)))
+        (is (= 2 (caret-line s)))))))
+
+(deftest blocks-move-with-the-text
+  (with-session [s]
+    (t/type! s "one\ntwo")
+    (with-app! s app/add-block :b 5 panel)
+    (is (= 1 (:line (first (:block-places (t/app s))))))
+    (t/press! s sdl/K-UP cmd)
+    (t/type! s "zero\n")
+    (is (= 10 (get-in (t/app s) [:doc :marks :b])))
+    (is (= 2 (:line (first (:block-places (t/app s))))) "still below \"two\"")
+    (with-app! s app/remove-block :b)
+    (is (empty? (:block-places (t/app s))))))
+
+(deftest boxes-take-their-clicks
+  (with-session [s]
+    (t/type! s "one\ntwo")
+    (with-app! s app/add-block :b 0 panel)
+    (let [caret (t/caret s)
+          {[x y w h] :rect} (->> (:block-places (t/app s)) first :placed
+                                 (filter #(= :checkbox (get-in % [:node :kind]))) first)
+          m (* 2 24)]
+      (t/click! s (+ m x (quot w 2)) (+ m y (quot h 2)))
+      (is (= caret (t/caret s)) "the caret stays put")
+      (is (true? (get-in (t/app s) [:ui-values :done])) "the checkbox is ticked")
+      (t/click! s (+ m x (quot w 2)) (+ m y (quot h 2)))
+      (is (false? (get-in (t/app s) [:ui-values :done])))
+      (t/send! s {:type :move :x (+ m x 1.0) :y (+ m y 1.0)})
+      (is (= :arrow (app/pointer (t/app s))))))
+  (testing "floats are over the text"
+    (with-session [s]
+      (t/type! s "one")
+      (with-app! s app/set-floats [{:kind :box :style {:position :absolute :left 0 :top 0
+                                                       :width 100 :height 100}}])
+      (t/click! s 300.0 300.0)
+      (is (= 3 (t/caret s)) "the click didn't reach the text"))))

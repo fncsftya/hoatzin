@@ -35,7 +35,9 @@
     {:type :click :x x :y y :mod m :clicks n}
                                     left button down, in render (pixel)
                                     coordinates; shift extends the selection,
-                                    a double click (:clicks 2) selects a word
+                                    a double click (:clicks 2) selects a word.
+                                    A box (see `add-block`, `set-floats`)
+                                    takes the clicks on it
     {:type :drag  :x x :y y}        pointer moved with the left button down
     {:type :move  :x x :y y}        pointer moved with no button down
     {:type :leave}                  pointer left the window
@@ -57,7 +59,8 @@
             [hoatzin.layout :as layout]
             [hoatzin.sdl :as sdl]
             [hoatzin.text :as text]
-            [hoatzin.textures :as textures]))
+            [hoatzin.textures :as textures]
+            [hoatzin.ui :as ui]))
 
 (def defaults
   {:family      ct/default-family
@@ -81,7 +84,12 @@
    :scrollbar-thumb [78 80 102]
    :scrollbar-thumb-active [128 132 158]
    :status-background [24 24 37]
-   :status-foreground [170 168 190]})
+   :status-foreground [170 168 190]
+   :ui-family   "Helvetica"    ; text in boxes (see hoatzin.ui)
+   :ui-font-size 13            ; points
+   :ui-border   [96 98 128]    ; boxes' colours, where their style sets none
+   :ui-accent   [128 132 158]
+   :ui-field-background [24 24 37]})
 
 (def mode-labels {:normal "NORMAL" :insert "INSERT"})
 
@@ -118,6 +126,16 @@
 ;;   :hover? :grab                         the pointer is over the scroll bar;
 ;;                                         the thumb is held :grab px below its top
 ;;   :composition                          {:text :cursor} while composing, or nil
+;;   :blocks                               boxes in the text (see hoatzin.ui), by
+;;                                         id: each sits below the paragraph
+;;                                         holding the document's mark of that id
+;;   :floats                               boxes above everything, placed in
+;;                                         the window, last on top
+;;   :ui-values                            interactive boxes' values, by :id
+;;   :block-places :float-places           where they are, as `place-blocks` and
+;;                                         `place-floats` say
+;;   :ui :ui-textures                      text in boxes: its face, its textures
+;;   :ui-hover?                            the pointer is over a box
 ;;   :size :scroll                         output size and scroll, in pixels
 ;;   :focused? :blink-from                 the caret blinks from :blink-from
 ;;   :dirty? :drawn-phase                  redraw needed / caret phase drawn
@@ -162,15 +180,40 @@
   [{:keys [layout composition upstream?] :as app}]
   (layout/caret layout (view-caret app) (and upstream? (nil? composition))))
 
-(defn- status-view
-  "The status bar's font, its metrics and a cache for its text, set."
-  [app]
-  (let [font (ct/font (:status-family app) (* (:status-font-size app) (:density app)))]
-    {:font font :metrics (layout/metrics font) :lines (atom {})}))
+(defn- face
+  "A font of `family` at `size` points, its metrics, and a cache of up to
+  `kept` texts set as lines in it."
+  [app family size kept]
+  (let [font (ct/font family (* size (:density app)))]
+    {:font font :metrics (layout/metrics font) :lines (atom {}) :kept kept}))
 
-(defn- release-status-lines! [lines]
-  (run! #(ct/release (:line %)) (vals @lines))
+(defn- release-face-lines! [{:keys [lines]}]
+  (run! #(some-> (:line %) ct/release) (vals @lines))
   (reset! lines {}))
+
+(defn- release-face! [f]
+  (release-face-lines! f)
+  (ct/release-font (:font f)))
+
+(defn- face-line
+  "`text` set as a line in face `f`, as hoatzin.coretext's line functions
+  take it, with its UTF-16 :length; :line is nil for \"\". Once the face
+  has `kept` texts set, they are all dropped: the command line's text
+  changes with every keystroke."
+  [f text]
+  (let [lines (:lines f)]
+    (or (get @lines text)
+        (let [ln {:line (ct/make-line (:font f) text) :base 0
+                  :length (ct/utf16-length text)}]
+          (when (>= (count @lines) (:kept f)) (release-face-lines! f))
+          (swap! lines assoc text ln)
+          ln))))
+
+(defn- face-width
+  "How wide `text` is in face `f`, in render pixels."
+  [f text]
+  (let [{:keys [line length] :as ln} (face-line f text)]
+    (if line (long (Math/ceil (ct/offset-for-index ln length))) 0)))
 
 (defn- file-name [path] (some-> path (str/split #"/") peek))
 
@@ -189,21 +232,14 @@
   (str (or (file-name path) "[No Name]") (when modified? " [+]")))
 
 (def ^:private status-lines-kept
-  "How many status texts are kept set as lines. The command line's changes
-  with every keystroke, so they are all dropped once there are this many."
+  "How many status texts are kept set as lines."
   8)
 
-(defn- status-line
-  "`text` set as a line in the status bar's font, as hoatzin.coretext's
-  line functions take it, with its UTF-16 :length."
-  [{:keys [status]} text]
-  (let [lines (:lines status)]
-    (or (get @lines text)
-        (let [ln {:line (ct/make-line (:font status) text) :base 0
-                  :length (ct/utf16-length text)}]
-          (when (>= (count @lines) status-lines-kept) (release-status-lines! lines))
-          (swap! lines assoc text ln)
-          ln))))
+(def ^:private ui-lines-kept
+  "How many texts in boxes are kept set as lines: more than are on screen."
+  512)
+
+(defn- status-line [{:keys [status]} text] (face-line status text))
 
 (defn- sync-modified
   "Whether the text differs from the file, compared only when either has
@@ -217,19 +253,78 @@
         (cond-> (assoc app :compared [text saved] :modified? modified?)
           (not= modified? (:modified? app)) (assoc :dirty? true))))))
 
-(defn- release-view! [{:keys [ctx textures font status status-textures]}]
+(defn- release-view! [{:keys [ctx textures font status status-textures ui ui-textures]}]
   (some-> ctx layout/release-context)
   (some-> textures textures/clear!)
   (some-> font ct/release-font)
   (some-> status-textures textures/clear!)
-  (when status
-    (release-status-lines! (:lines status))
-    (ct/release-font (:font status))))
+  (some-> status release-face!)
+  (some-> ui-textures textures/clear!)
+  (some-> ui release-face!))
+
+(defn- ui-context
+  "What hoatzin.ui places boxes with: text in the UI face, one line high."
+  [app]
+  (let [f (:ui app)
+        lh (get-in f [:metrics :line-height])]
+    {:scale (:density app) :text-size (fn [s] [(face-width f s) lh])}))
+
+(defn- shown-pos
+  "Where document position `pos` is in the display text: past the
+  composition, if that is inserted before it."
+  [{:keys [doc composition]} pos]
+  (if (and composition (> pos (:caret doc))) (+ pos (count (:text composition))) pos))
+
+(defn- place-blocks
+  "Every block with a mark in the document, in order down the text, as
+  {:id :pos :line :top :height :placed}: below visual line :line, the last
+  of the paragraph holding its mark, as wide as the text. :top and :placed
+  (from hoatzin.ui/place) are in content pixels: from the text column's
+  left and the top of the text as scrolled."
+  [app]
+  (let [L      (:layout app)
+        lh     (layout/line-height L)
+        marks  (get-in app [:doc :marks])
+        width  (get-in app [:ctx :width])
+        ctx    (ui-context app)
+        blocks (->> (:blocks app)
+                    (keep (fn [[id node]]
+                            (when-let [pos (get marks id)]
+                              (let [pos (shown-pos app pos)]
+                                {:id id :node node :pos pos :line (layout/last-line L pos)}))))
+                    (sort-by (juxt :line :pos)))]
+    (loop [bs blocks, extra 0, out []]
+      (if-let [{:keys [node line] :as b} (first bs)]
+        (let [h (second (ui/measure ctx node))
+              top (+ (* (inc line) lh) extra)]
+          (recur (next bs) (+ extra h)
+                 (conj out (-> (dissoc b :node)
+                               (assoc :top top :height h
+                                      :placed (ui/place ctx node [0 top width h]))))))
+        out))))
+
+(defn- ui-value
+  "What interactive box `node` holds: what it was set to, else its :value."
+  [app {:keys [id value]}]
+  (get (:ui-values app) id value))
+
+(defn- place-floats
+  "The floats placed in the window, in render pixels: in a box as big as
+  it, which lays out those in flow down its left edge."
+  [app]
+  (if (seq (:floats app))
+    (let [[w h] (:size app)]
+      (subvec (ui/place (ui-context app)
+                        {:kind :box :style {:align :start} :children (:floats app)}
+                        [0 0 w h])
+              1))
+    []))
 
 (defn sync-view
   "Bring font, layout context and layout up to date with the renderer's
-  output and the text. Each step is a cheap comparison unless its inputs
-  changed. Between frames, as this is, it also trims the layout's cache."
+  output and the text, then place the boxes. Each step is a cheap
+  comparison unless its inputs changed. Between frames, as this is, it also
+  trims the layout's cache."
   [app]
   (let [density (double ((:density-fn app)))
         app (if (= density (:density app))
@@ -238,7 +333,10 @@
                   (let [app (assoc app :density density
                                        :font (ct/font (:family app) (* (:font-size app) density))
                                        :ctx nil)]
-                    (assoc app :status (status-view app)))))
+                    (assoc app
+                           :status (face app (:status-family app) (:status-font-size app)
+                                         status-lines-kept)
+                           :ui (face app (:ui-family app) (:ui-font-size app) ui-lines-kept)))))
         [w _ :as size] (sdl/render-output-size (:renderer app))
         wrap (max 1 (- w (* 2 (px app (:margin app)))))
         app (if (= wrap (get-in app [:ctx :width]))
@@ -250,10 +348,11 @@
         app (if (= size (:size app)) app (assoc app :size size :dirty? true))
         app (sync-modified app)]
     (layout/trim! (:ctx app))
-    (if (and (:layout app) (same-display? shown (:laid-out app)))
-      app
-      (assoc app :layout (layout/layout (:ctx app) (display-text app))
-                 :laid-out shown :dirty? true))))
+    (let [app (if (and (:layout app) (same-display? shown (:laid-out app)))
+                app
+                (assoc app :layout (layout/layout (:ctx app) (display-text app))
+                           :laid-out shown :dirty? true))]
+      (assoc app :block-places (place-blocks app) :float-places (place-floats app)))))
 
 (defn- status-height [app]
   (+ (get-in app [:status :metrics :line-height]) (* 2 (px app (:status-padding app)))))
@@ -265,8 +364,32 @@
 
 (defn- view-height [app] (- (text-height app) (* 2 (px app (:margin app)))))
 
+(defn- line-top
+  "Where visual line `k` starts, in content pixels: after the lines and
+  the blocks above it."
+  [app k]
+  (reduce (fn [y {:keys [line height]}] (if (< line k) (+ y height) (reduced y)))
+          (* k (layout/line-height (:layout app)))
+          (:block-places app)))
+
+(defn- line-at-y
+  "The visual line at content pixel `y`, clamped to the text. In a block,
+  the line above it."
+  [app y]
+  (let [L  (:layout app)
+        lh (layout/line-height L)
+        k  (loop [bs (:block-places app), extra 0]
+             (if-let [{:keys [line top height]} (first bs)]
+               (cond (< y top)            (Math/floor (/ (double (- y extra)) lh))
+                     (< y (+ top height)) line
+                     :else                (recur (next bs) (+ extra height)))
+               (Math/floor (/ (double (- y extra)) lh))))]
+    (-> (long k) (max 0) (min (dec (layout/line-count L))))))
+
 (defn- content-height [app]
-  (let [L (:layout app)] (* (layout/line-count L) (layout/line-height L))))
+  (let [L (:layout app)]
+    (reduce + (* (layout/line-count L) (layout/line-height L))
+            (map :height (:block-places app)))))
 
 (defn- max-scroll [app] (max 0 (- (content-height app) (view-height app))))
 
@@ -279,9 +402,8 @@
 (defn- visible-lines
   "The visual lines [k0, k1) at least partly in view."
   [{:keys [layout scroll] :as app}]
-  (let [lh (layout/line-height layout)]
-    [(quot scroll lh)
-     (min (layout/line-count layout) (inc (quot (+ scroll (view-height app)) lh)))]))
+  [(line-at-y app scroll)
+   (min (layout/line-count layout) (inc (line-at-y app (+ scroll (view-height app)))))])
 
 (defn scrollbar
   "The scroll bar in render pixels, or nil when the text fits: the bar's
@@ -310,7 +432,7 @@
   (let [L  (:layout app)
         lh (layout/line-height L)
         [_ k] (caret-place app)
-        top (* k lh)
+        top (line-top app k)
         vh (view-height app)
         s  (:scroll app)]
     (assoc app :scroll (cond (< top s) top
@@ -343,6 +465,10 @@
                   :write-file-fn (fn [_ _] "no file system")
                   :textures     (textures/cache)
                   :status-textures (textures/cache)
+                  :ui-textures  (textures/cache)
+                  :blocks       {}
+                  :floats       []
+                  :ui-values    {}
                   :scratch      {:frect (ffi/alloc sdl/frect) :irect (ffi/alloc sdl/rect)}
                   :doc          ed/empty-doc
                   :saved        (:text ed/empty-doc)
@@ -356,6 +482,34 @@
 (defn destroy! [app]
   (release-view! app)
   (run! ffi/free (vals (:scratch app))))
+
+;; ---------------------------------------------------------------- boxes
+
+(defn add-block
+  "Show box `node` (see hoatzin.ui) in the text, below the paragraph
+  holding position `pos` and as wide as the text, which makes room for it.
+  It keeps to that paragraph as the text is edited. Replaces any block
+  `id` was."
+  [app id pos node]
+  (-> app
+      (update :doc ed/mark id pos)
+      (assoc-in [:blocks id] node)
+      (assoc :dirty? true)))
+
+(defn remove-block [app id]
+  (-> app (update :doc ed/unmark id) (update :blocks dissoc id) (assoc :dirty? true)))
+
+(defn set-floats
+  "Show boxes `nodes` above everything, placed in the window: those in
+  flow down its left edge, absolute ones where they say. Later ones are
+  drawn over earlier ones."
+  [app nodes]
+  (assoc app :floats (vec nodes) :dirty? true))
+
+(defn set-ui-value
+  "Set what the interactive box `id` holds."
+  [app id value]
+  (-> app (assoc-in [:ui-values id] value) (assoc :dirty? true)))
 
 ;; ---------------------------------------------------------------- input
 
@@ -469,12 +623,8 @@
 (defn- point->line
   "The visual line under render pixel (x, y), and x along it: [k x]."
   [app x y]
-  (let [L (:layout app)
-        m (px app (:margin app))
-        k (-> (long (Math/floor (/ (+ (- y m) (:scroll app)) (layout/line-height L))))
-              (max 0)
-              (min (dec (layout/line-count L))))]
-    [k (- x m)]))
+  (let [m (px app (:margin app))]
+    [(line-at-y app (+ (- y m) (:scroll app))) (- x m)]))
 
 (defn- word-at
   "The [lo hi] word (or whitespace) under the point, or nil on an empty line."
@@ -513,6 +663,25 @@
           (select-range app now hi wlo)
           (select-range app now lo (max hi whi))))
       :else (move-on-line app now true k pos))))
+
+(defn- ui-hit
+  "The box under render pixel (x, y), as hoatzin.ui/hit gives it: floats
+  before blocks, and blocks only where the text is in view."
+  [app x y]
+  (or (ui/hit (:float-places app) x y)
+      (let [m (px app (:margin app))]
+        (when (and (>= y m) (< y (+ m (view-height app))))
+          (some #(ui/hit (:placed %) (- x m) (+ (- y m) (:scroll app)))
+                (:block-places app))))))
+
+(defn- on-ui-click
+  "A click on a box: it doesn't reach the text. A checkbox toggles."
+  [app {:keys [node]}]
+  (case (:kind node)
+    :checkbox (-> app
+                  (assoc-in [:ui-values (:id node)] (not (ui-value app node)))
+                  (assoc :dirty? true))
+    app))
 
 (defn- on-wheel [app dy]
   (scroll-to app (- (:scroll app) (* dy (:wheel-lines app) (layout/line-height (:layout app))))))
@@ -682,6 +851,7 @@
         (-> app
             (assoc :doc (assoc ed/empty-doc :text t)
                    :path path :saved t :scroll 0 :goal-x nil :upstream? false
+                   :blocks {}
                    :message (str "\"" file "\" " (file-lines t) " lines"))
             (dissoc :composition :dragging? :drag-word :drag-point)
             (touched now))))))
@@ -706,17 +876,21 @@
                     (= :command (:mode app)) (on-command-key app now (:key event))
                     :else (on-key app now (:key event) (:mod event 0)))
       ;; The scroll bar leaves the document alone, so it works while composing.
-      :click  (cond (on-scrollbar? app (:x event)) (on-scrollbar-click app (:y event))
-                    composing? app
-                    :else (on-click app now (:x event) (:y event)
-                                    (:mod event 0) (:clicks event 1)))
+      ;; Boxes take the clicks on them, over the text and the scroll bar.
+      :click  (if-let [hit (ui-hit app (:x event) (:y event))]
+                (on-ui-click app hit)
+                (cond (on-scrollbar? app (:x event)) (on-scrollbar-click app (:y event))
+                      composing? app
+                      :else (on-click app now (:x event) (:y event)
+                                      (:mod event 0) (:clicks event 1))))
       :drag   (cond (:grab app) (on-thumb-drag app (:y event))
                     composing? app
                     :else (on-drag app now (:x event) (:y event)))
       :release (cond-> (dissoc app :dragging? :drag-word :drag-point :grab)
                  (:grab app) (assoc :dirty? true))
-      :move   (hover app (boolean (on-scrollbar? app (:x event))))
-      :leave  (hover app false)
+      :move   (-> (hover app (boolean (on-scrollbar? app (:x event))))
+                  (assoc :ui-hover? (some? (ui-hit app (:x event) (:y event)))))
+      :leave  (-> (hover app false) (dissoc :ui-hover?))
       :tick   (autoscroll app now)
       :wheel  (on-wheel app (:dy event))
       :focus  (assoc app :focused? (:focused? event) :blink-from now :dirty? true)
@@ -747,10 +921,10 @@
   "A bar in insert mode, a block in normal mode."
   [app]
   (let [{:keys [layout scroll]} app
-        {:keys [line-height caret-top caret-height]} (:metrics layout)
+        {:keys [caret-top caret-height]} (:metrics layout)
         m (px app (:margin app))
         [x k] (caret-place app)
-        y (+ m (- (* k line-height) scroll) caret-top)]
+        y (+ m (- (line-top app k) scroll) caret-top)]
     (if (insert? app)
       [(+ m (long (Math/floor x))) y (max 1 (px app 1)) caret-height]
       (let [[x0 x1] (block-extent app x k)
@@ -803,10 +977,10 @@
           :else                      (min blink (:autoscroll-ms app)))))
 
 (defn pointer
-  "The mouse cursor the pointer should show: :arrow over the scroll bar,
-  else :text."
+  "The mouse cursor the pointer should show: :arrow over the scroll bar
+  or a box, else :text."
   [app]
-  (if (or (:hover? app) (:grab app)) :arrow :text))
+  (if (or (:hover? app) (:grab app) (:ui-hover? app)) :arrow :text))
 
 (defn needs-draw? [app now]
   (or (:dirty? app) (not= (caret-visible? app now) (:drawn-phase app))))
@@ -834,7 +1008,7 @@
   [app]
   (let [{:keys [renderer textures scratch layout scroll]} app
         {:keys [frect irect]} scratch
-        {:keys [line-height baseline]} (:metrics layout)
+        {:keys [baseline]} (:metrics layout)
         m  (px app (:margin app))
         [x y w h] (caret-rect app)
         [fr fg fb :as fore] (:foreground app)
@@ -854,7 +1028,7 @@
         (sdl/set-texture-color-mod texture r g b)
         (sdl/render-texture renderer texture ffi/null
                             (sdl/set-frect! frect (- m pad)
-                                            (+ m (- (* k line-height) scroll) (- baseline base))
+                                            (+ m (- (line-top app k) scroll) (- baseline base))
                                             width height))
         (sdl/set-texture-color-mod texture 255 255 255)))))
 
@@ -867,8 +1041,7 @@
 (defn- status-width
   "How wide `text` is in the status bar, in render pixels."
   [app text]
-  (let [{:keys [length] :as ln} (status-line app text)]
-    (long (Math/ceil (ct/offset-for-index ln length)))))
+  (face-width (:status app) text))
 
 (defn- draw-status-text!
   "`text` in the status bar, starting at render pixel `x`."
@@ -902,6 +1075,71 @@
       (draw-status-text! app right right-x))
     (textures/end-frame! status-textures)))
 
+(defn- set-clip!
+  "Clip drawing to [x y w h], or with nil not at all."
+  [{:keys [renderer scratch]} clip]
+  (sdl/set-render-clip-rect renderer (if-let [[x y w h] clip]
+                                       (sdl/set-rect! (:irect scratch) x y w h)
+                                       ffi/null)))
+
+(defn- intersect
+  "Rects [x y w h] `a` and `b` (nil: everywhere) overlap here, or nil."
+  [a b]
+  (if-not a
+    b
+    (let [[ax ay aw ah] a, [bx by bw bh] b
+          x0 (max ax bx), y0 (max ay by)
+          x1 (min (+ ax aw) (+ bx bw)), y1 (min (+ ay ah) (+ by bh))]
+      (when (and (< x0 x1) (< y0 y1)) [x0 y0 (- x1 x0) (- y1 y0)]))))
+
+(defn- draw-ui-text!
+  "One line of `text` in `rect` [x y w h], clipped to it and to `clip`:
+  centred vertically, and with `centre?` horizontally."
+  [app text [x y w h :as rect] color centre? clip]
+  (when-let [visible (and (seq text) (intersect clip rect))]
+    (let [{:keys [renderer scratch ui ui-textures]} app
+          {:keys [line-height baseline]} (:metrics ui)
+          {:keys [line]} (face-line ui text)
+          {:keys [texture width height pad] base :baseline}
+          (textures/fetch! ui-textures renderer [color text] line color)
+          x (if centre? (+ x (quot (- w (face-width ui text)) 2)) x)]
+      (set-clip! app visible)
+      (sdl/render-texture renderer texture ffi/null
+                          (sdl/set-frect! (:frect scratch) (- x pad)
+                                          (+ y (quot (- h line-height) 2) baseline (- base))
+                                          width height))
+      (set-clip! app clip))))
+
+(defn- draw-boxes!
+  "Placed boxes (see hoatzin.ui/place) moved by (`dx`, `dy`), within
+  `clip` [x y w h] (nil: the whole window): each its background, its
+  border, then what it holds."
+  [app placed dx dy clip]
+  (let [{:keys [renderer scratch]} app
+        fill! (fn [[r g b] x y w h]
+                (sdl/set-render-draw-color renderer r g b 255)
+                (sdl/render-fill-rect renderer (sdl/set-frect! (:frect scratch) x y w h)))]
+    (doseq [{:keys [node] [x y w h] :rect [cx cy cw ch] :content} placed
+            :let [st (ui/style node)
+                  x (+ x dx), y (+ y dy), cx (+ cx dx), cy (+ cy dy)
+                  bw (px app (:border st 0))
+                  border (or (:border-color st) (:ui-border app))
+                  color (or (:color st) (:foreground app))
+                  bg (or (:background st) (when (= :field (:kind node)) (:ui-field-background app)))]]
+      (when bg (fill! bg x y w h))
+      (when (pos? bw)
+        (fill! border x y w bw)
+        (fill! border x (- (+ y h) bw) w bw)
+        (fill! border x (+ y bw) bw (- h bw bw))
+        (fill! border (- (+ x w) bw) (+ y bw) bw (- h bw bw)))
+      (case (:kind node)
+        :label    (draw-ui-text! app (str (:text node)) [cx cy cw ch] color false clip)
+        :button   (draw-ui-text! app (str (:text node)) [cx cy cw ch] color true clip)
+        :field    (draw-ui-text! app (str (ui-value app node)) [cx cy cw ch] color false clip)
+        :checkbox (when (ui-value app node)
+                    (fill! (or (:color st) (:ui-accent app)) cx cy cw ch))
+        nil))))
+
 (defn draw!
   "Render the app at time `now` (ms), present it, and return the app."
   [app now]
@@ -925,14 +1163,14 @@
         (doseq [[k x0 x1] (layout/selection-segments layout lo hi nl first-k last-k)
                 :let [x0 (long (Math/floor x0))]]
           (sdl/render-fill-rect renderer
-                                (sdl/set-frect! frect (+ m x0) (+ m (- (* k line-height) scroll))
+                                (sdl/set-frect! frect (+ m x0) (+ m (- (line-top app k) scroll))
                                                 (- (long (Math/ceil x1)) x0) line-height)))))
     (doseq [k (range first-k last-k)
             :let [{:keys [line text]} (layout/visual-line layout k)]
             :when (not (str/blank? text))]
       (let [{:keys [texture width height pad] base :baseline}
             (textures/fetch! textures renderer text line (:foreground app))
-            y (+ m (- (* k line-height) scroll) (- baseline base))]
+            y (+ m (- (line-top app k) scroll) (- baseline base))]
         (sdl/render-texture renderer texture ffi/null
                             (sdl/set-frect! frect (- m pad) y width height))))
     (when-let [{comp :text} (:composition app)]
@@ -944,9 +1182,12 @@
           (sdl/render-fill-rect renderer
                                 (sdl/set-frect! frect
                                                 (+ m (long (Math/floor x0)))
-                                                (+ m (- (* k line-height) scroll) baseline below)
+                                                (+ m (- (line-top app k) scroll) baseline below)
                                                 (- (long (Math/ceil x1)) (long (Math/floor x0)))
                                                 thickness)))))
+    (doseq [{:keys [top height placed]} (:block-places app)
+            :when (and (< top (+ scroll vh)) (> (+ top height) scroll))]
+      (draw-boxes! app placed m (- m scroll) [0 m w vh]))
     (when (and caret? (not (command? app)))
       (if (insert? app) (draw-bar-caret! app) (draw-block-caret! app)))
     (sdl/set-render-clip-rect renderer ffi/null)
@@ -954,6 +1195,8 @@
     (draw-status-bar! app)
     (when (and caret? (command? app))
       (draw-bar-caret! app))
+    (draw-boxes! app (:float-places app) 0 0 nil)
     (sdl/render-present renderer)
     (textures/end-frame! textures)
+    (textures/end-frame! (:ui-textures app))
     (assoc app :dirty? false :drawn-phase caret?)))

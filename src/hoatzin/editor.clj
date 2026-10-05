@@ -6,6 +6,10 @@
   The selection runs between the anchor and the caret, in either order. There
   is no :anchor when nothing is selected, so an anchor never equals the caret.
 
+  :marks, when there are any, maps ids to positions that move with the text
+  as it is edited: what is inserted before a mark pushes it along, and a
+  mark inside text that is deleted lands where the deletion was.
+
   The text is a hoatzin.text rope, so edits cost the same however long the
   document is."
   (:require [hoatzin.text :as text]))
@@ -25,13 +29,33 @@
 (defn selected-text [{:keys [text] :as doc}]
   (when-let [[lo hi] (selection doc)] (text/slice text lo hi)))
 
+(defn mark
+  "Mark position `pos` as `id`, replacing any mark `id` was."
+  [doc id pos]
+  (assoc-in doc [:marks id] pos))
+
+(defn unmark [doc id]
+  (let [marks (dissoc (:marks doc) id)]
+    (if (empty? marks) (dissoc doc :marks) (assoc doc :marks marks))))
+
+(defn- move-marks
+  "The marks after [lo, hi) was replaced by `n` characters. A mark at `lo`
+  stays put: text typed at a mark goes after it."
+  [doc lo hi n]
+  (if-let [marks (:marks doc)]
+    (assoc doc :marks (update-vals marks #(cond (<= % lo) %
+                                                (>= % hi) (+ % (- n (- hi lo)))
+                                                :else     lo)))
+    doc))
+
 (defn delete
   "Delete the range between `a` and `b`; the caret lands where it was."
   [{:keys [text] :as doc} a b]
   (let [lo (min a b), hi (max a b)]
     (-> doc
         (assoc :text (text/replace text lo hi "") :caret lo)
-        (dissoc :anchor))))
+        (dissoc :anchor)
+        (move-marks lo hi 0))))
 
 (defn insert
   "Insert `s` at the caret, replacing any selection, and move the caret past it."
@@ -39,7 +63,8 @@
   (let [[lo hi] (or (selection doc) [caret caret])]
     (-> doc
         (assoc :text (text/replace text lo hi s) :caret (+ lo (count s)))
-        (dissoc :anchor))))
+        (dissoc :anchor)
+        (move-marks lo hi (count s)))))
 
 (defn move
   "Move the caret to `pos`, dropping any selection."
