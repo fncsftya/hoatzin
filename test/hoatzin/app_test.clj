@@ -12,6 +12,7 @@
             [hoatzin.app.insets :as insets]
             [hoatzin.app.theme :as theme]
             [hoatzin.lib.layout :as layout]
+            [hoatzin.lib.text :as text]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.test-support :as t :refer [with-session]]))
 
@@ -1481,6 +1482,48 @@
       (is (insets/over (t/app s)) "and on the way up")
       (t/press! s sdl/K-UP)
       (is (= 0 (t/caret s))))))
+
+(defn- stop
+  "Where the caret is, as up and down see it: the text it is in, or the
+  folded section it is over, and that text's line."
+  [s]
+  (let [a (t/app s)
+        v (insets/innermost-view a)]
+    (if (insets/over a)
+      [(insets/path a) :header]
+      [(insets/path a) (str (text/line (text/of (get-in v [:doc :text]))
+                                       (first (text/line-at (text/of (get-in v [:doc :text]))
+                                                            (get-in v [:doc :caret])))))])))
+
+(deftest up-and-down-move-a-visual-line-at-a-time
+  ;; a list above the first line; a checklist at the end of a list, just
+  ;; before another; a section ending in a list in a list; and a folded
+  ;; section, with a list above its first line
+  (with-session [s :mode :normal :height 2000]
+    (auk! s {:content [{:type :list :content [{:text "z"}]}
+                       "one"
+                       {:type :list :content [{:text "a"} {:type :checklist :content [{:text "x"} {:text "y"}]}]}
+                       {:type :checklist :content [{:text "p"} {:text "q"}]}
+                       (ref 1) "two" (ref 2) "three"]
+             :sections [{:id 1 :content ["s" {:type :list :content [{:text "m"} {:type :list :content [{:text "n"}]}]}]}
+                        {:id 2 :content [{:type :list :content [{:text "above"}]} "t"]}]})
+    (let [[x y _ h] (:header (section-place s 4))]
+      (t/click! s (+ 48.0 x 10) (+ 48.0 y (quot h 2))))
+    (t/press! s sdl/K-UP cmd)
+    (t/press! s sdl/K-UP)
+    (let [top #(insets/caret-top (t/app s))
+          walk (fn [key n] (vec (for [_ (range n)] (do (t/press! s key) [(stop s) (top)]))))
+          start [(stop s) (top)]
+          down (walk sdl/K-DOWN 12)
+          up   (walk sdl/K-UP 12)]
+      (is (= [[[0] "z"] [nil "one"] [[1] "a"] [[1 0] "x"] [[1 0] "y"] [[2] "p"] [[2] "q"]
+              [[3] "s"] [[3 0] "m"] [[3 0 0] "n"] [nil "two"] [[4] :header] [nil "three"]]
+             (into [(first start)] (map first down)))
+          "every line, and the folded header, in order down the page")
+      (is (apply < (second start) (map second down)) "each lower than the last")
+      (is (= (reverse (into [start] (butlast down))) up) "and back up the same way")
+      (t/press! s sdl/K-UP)
+      (is (= [[0] "z"] (stop s)) "the first line stays the first"))))
 
 (deftest up-and-down-cross-sections-in-sections
   (with-session [s :mode :normal]

@@ -921,82 +921,124 @@
 
 ;; ---------------------------------------------------------------- crossing
 
-(defn- open? [b] (and (:inset b) (:text b)))
+;; Up and down move a visual line at a time, whatever text it is in. A
+;; stop is where the caret can be: [path k], visual line k of the text at
+;; `path` (the buffer's for []), or [path :header], over the folded inset
+;; at `path`. From the caret, the next stop down is the first inset below
+;; its line, else the next line, else, at the end of its text, the next
+;; after the inset holding that text, and so on out; up is the same the
+;; other way.
 
-(defn- enter-at
-  "The caret into `level`'s inset `b`, as placed, on its first (or `last?`
-  last) line, nearest `level`'s content x `x`."
-  [level now b last? x]
-  (let [id (:inset b)
-        [tx] (:text b)
-        L (get-in level [:insets id :layout])
-        k (if last? (dec (layout/line-count L)) 0)]
-    (in-view (enter level now id)
-             #(move-on-line % now false k (layout/position-at L k (- x tx)) (- x tx)))))
+(defn- inset-blocks
+  "`level`'s insets as placed below visual line `k` (-1: above the
+  first), in order."
+  [level k]
+  (filter #(and (:inset %) (= k (:line %))) (:block-places level)))
 
-(defn- go-to
-  "The caret into `level`'s inset `b`, as placed (see `enter-at`), or over
-  it if it is folded, minding content x `x` for when it moves on."
-  [level now b last? x]
-  (if (open? b)
-    (enter-at level now b last? x)
-    (assoc (enter level now (:inset b)) :goal-x x)))
+(declare first-stop last-stop)
 
-(defn- enter-near
-  "From `level`'s text, the caret into, or over, the first inset below
-  its line (`down?`), or the last above it; nil if there is none."
-  [level now down?]
-  (let [[x k] (geo/caret-place level)
-        x  (or (:goal-x level) x)
-        bs (filter :inset (:block-places level))]
-    (if down?
-      (some-> (first (filter #(= k (:line %)) bs)) (as-> b (go-to level now b false x)))
-      (some-> (last (filter #(= (dec k) (:line %)) bs)) (as-> b (go-to level now b true x))))))
+(defn- stop-into
+  "The first (or `last?` last) stop in `level`'s inset `b`, as placed: in
+  its text, or over its header if it is folded."
+  [level pre b last?]
+  (let [q (conj pre (:inset b))]
+    (if-let [v (view level (:inset b))]
+      ((if last? last-stop first-stop) v q)
+      [q :header])))
 
-(defn- step-out
-  "From `level`'s inset `id`, down (or up) to the next inset at the same
-  place, else out to the line of `level`'s text below (or above) it,
-  nearest content x `x`; nil if there is no line to go to."
-  [level now id down? x]
-  (let [b (place-of level id)
-        same (filter #(and (:inset %) (= (:line %) (:line b))) (:block-places level))
-        [before after] (split-with #(not= id (:inset %)) same)
-        out (fn [k]
-              (let [level (leave level now)]
-                (move-on-line level now false k (layout/position-at (:layout level) k x) x)))]
-    (if down?
-      (if-let [nb (second after)]
-        (go-to level now nb false x)
-        (when (< (inc (:line b)) (layout/line-count (:layout level)))
-          (out (inc (:line b)))))
-      (if-let [pb (last before)]
-        (go-to level now pb true x)
-        (when (>= (:line b) 0)
-          (out (:line b)))))))
+(defn- first-stop [level pre]
+  (if-let [b (first (inset-blocks level -1))]
+    (stop-into level pre b false)
+    [pre 0]))
 
-(defn- cross*
-  [level now down?]
-  (if-let [id (:inset level)]
-    (if-let [v (view level id)]
-      (if-let [v' (cross* v now down?)]
-        (unview level id v')
-        (when-not (:inset v)
-          (let [[x k] (geo/caret-place v)
-                [tx] (:text (place-of level id))]
-            (when (= k (if down? (dec (layout/line-count (:layout v))) 0))
-              (step-out level now id down? (+ tx (or (:goal-x v) x)))))))
-      (step-out level now id down? (or (:goal-x level) (first (geo/caret-place level)))))
-    (enter-near level now down?)))
+(defn- last-stop [level pre]
+  (let [k (dec (layout/line-count (:layout level)))]
+    (if-let [b (last (inset-blocks level k))]
+      (stop-into level pre b true)
+      [pre k])))
+
+(defn- next-in
+  "The next stop down in `level`, at `pre`, after its line `k`, or after its
+  inset `from` below that line; nil at the end of its text."
+  [level pre k from]
+  (let [bs (inset-blocks level k)
+        bs (if from (rest (drop-while #(not= from (:inset %)) bs)) bs)]
+    (cond (seq bs) (stop-into level pre (first bs) false)
+          (< (inc k) (layout/line-count (:layout level))) [pre (inc k)])))
+
+(defn- prev-in
+  "The next stop up in `level`, at `pre`, before its line `k`, or before
+  its inset `from` below line `k`; nil at the start of its text."
+  [level pre k from]
+  (if from
+    (if-let [b (last (take-while #(not= from (:inset %)) (inset-blocks level k)))]
+      (stop-into level pre b true)
+      (when (>= k 0) [pre k]))
+    (if-let [b (last (inset-blocks level (dec k)))]
+      (stop-into level pre b true)
+      (when (pos? k) [pre (dec k)]))))
+
+(defn- chain
+  "The texts from the buffer's to the one the caret is in (or that holds
+  the folded inset it is over), each [level path], as views."
+  [app]
+  (loop [level app, pre [], out [[app []]]]
+    (if-let [v (some->> (:inset level) (view level))]
+      (let [pre (conj pre (:inset level))] (recur v pre (conj out [v pre])))
+      out)))
+
+(defn- next-stop
+  "The stop the caret goes to down (or up), from `chain`, its texts, the
+  caret on line `k` of the innermost, or over its inset `from`; nil if
+  there is none."
+  [chain k from down?]
+  (let [[level pre] (peek chain)]
+    (or ((if down? next-in prev-in) level pre k from)
+        (when (> (count chain) 1)
+          (let [outer (pop chain)
+                id    (peek pre)]
+            (next-stop outer (:line (place-of (first (peek outer)) id)) id down?))))))
+
+(defn- chain-to
+  "The app with the caret in the text at `path`, or over the folded inset
+  at its end, the chain of :inset ids down to it and no further."
+  [app path]
+  (reduce (fn [app n] (at app (subvec path 0 n) #(assoc % :inset (path n))))
+          (leave-all app)
+          (range (count path))))
+
+(defn- go-stop
+  "The caret to `stop`, nearest render x `x`: on its line, or over its
+  header."
+  [app now [q k] x]
+  (let [app (chain-to app q)]
+    (if (= :header k)
+      (let [holder (innermost-view app)]
+        (-> (at app (pop q) #(assoc % :goal-x (- x (first (geo/origin holder)))))
+            (touched now)))
+      (in-view app (fn [v]
+                     (let [x (- x (first (geo/origin v)))]
+                       (move-on-line v now false k (layout/position-at (:layout v) k x) x)))))))
 
 (defn cross
-  "Up or down `key`, without modifiers, from the last line above an inset
-  into it (or onto it, if it is folded), from its first or last line out
-  of it, or into the next inset at the same place, at any depth; nil if
-  the key doesn't cross."
+  "Up or down `key`, without modifiers: the caret to the visual line above
+  or below, whatever text it is in, or over a folded inset's header, at
+  any depth; nil if that is the next line of the text it is in already,
+  as the keys move it there themselves, or there is none."
   [app now key mod]
   (when (and (zero? (bit-and mod (bit-or sdl/KMOD-SHIFT sdl/KMOD-GUI sdl/KMOD-CTRL)))
              (or (= key sdl/K-UP) (= key sdl/K-DOWN)))
-    (cross* app now (= key sdl/K-DOWN))))
+    (let [down?   (= key sdl/K-DOWN)
+          chain   (chain app)
+          [level pre] (peek chain)
+          over-id (when (over app) (:inset level))
+          [cx k]  (if over-id
+                    [(first (geo/caret-place level)) (:line (place-of level over-id))]
+                    (geo/caret-place level))
+          x       (+ (first (geo/origin level)) (or (:goal-x level) cx))
+          [q k2 :as stop] (next-stop chain k over-id down?)]
+      (when (and stop (not (and (nil? over-id) (= q pre) (number? k2))))
+        (go-stop app now stop x)))))
 
 ;; ---------------------------------------------------------------- the pointer
 
