@@ -27,6 +27,8 @@
    :frame-ms    8              ; how often a gliding list moves on
    :type-ahead-ms 1000         ; how long typing into a dropdown's list waits
                                ; for the next letter of the same option's name
+   ;; the colours are the theme's, as the settings name it (see
+   ;; hoatzin.app.theme); these are what the app has until it first syncs
    :background  [30 30 46]
    :foreground  [235 230 220]
    :selection   [76 84 128]
@@ -36,6 +38,8 @@
    :scrollbar-thumb-active [128 132 158]
    :status-background [24 24 37]
    :status-foreground [170 168 190]
+   :window-background [24 24 37] ; the windows over the text
+   :ui-dim      [170 168 190]  ; read-only fields' text, a dropdown's arrow
    :ui-border   [96 98 128]    ; boxes' colours, where their style sets none
    :ui-accent   [128 132 158]
    :ui-focus    [150 158 230]  ; the border of the field with the focus
@@ -68,6 +72,9 @@
 ;;                                         density
 ;;   :fonts                                the :settings fonts :font and :ui
 ;;                                         were made from
+;;   :applied-theme                       the name of the theme whose colours
+;;                                         (see hoatzin.app.theme) are in
+;;                                         the keys of `defaults`
 ;;   :fonts-at                             when (ms) the editor font setting,
 ;;                                         just changed, is to be applied
 ;;   :ui :ui-textures                      the UI font's {:font :metrics

@@ -180,7 +180,7 @@
               col-w   (reduce max (map #(ui-width app %) names))
               columns (hint-columns names col-w (px app hint-gap) (- w (* 2 m)))
               label   (fn [name] {:kind :label :text name
-                                  :style {:color (:status-foreground app)}})]
+                                  :style {:color (:foreground app)}})]
           ;; The side padding, with the border, is the margin: the names
           ;; line up with the command line's text.
           {:kind :box
@@ -188,7 +188,7 @@
                    :bottom (+ (/ (status-height app) d) hint-space)
                    :direction :row :gap hint-gap :border 1
                    :padding [hint-padding (- (:margin app) 1)]
-                   :background (:status-background app) :border-color (:ui-border app)}
+                   :background (:window-background app) :border-color (:ui-border app)}
            :children (mapv (fn [col] {:kind :box :style {:width (/ col-w d)}
                                       :children (mapv label col)})
                            columns)})))))

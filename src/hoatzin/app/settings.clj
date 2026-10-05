@@ -3,8 +3,10 @@
 
   Settings are a map:
     {:editor-font {:family s :size n}   the text's font
-     :ui-font     {:family s :size n}}  everything else's: the status bar,
+     :ui-font     {:family s :size n}   everything else's: the status bar,
                                         the command line and boxes
+     :theme       s}                    the name of a theme's, see
+                                        hoatzin.app.theme
   sizes in points. Each setting is at a path into the map, and `schema`
   says what each may be and what it is by default.
 
@@ -16,6 +18,7 @@
   (:require [babashka.fs :as fs]
             [clojure.data.json :as json]
             [clojure.string :as str]
+            [hoatzin.app.theme :as theme]
             [hoatzin.lib.coretext :as ct]))
 
 (def font-sizes "The font sizes allowed, in points: [min max]." [6 72])
@@ -31,7 +34,8 @@
   [{:path [:editor-font :family] :default ct/default-family :valid? family?}
    {:path [:editor-font :size]   :default 20                 :valid? font-size?}
    {:path [:ui-font :family]     :default "Menlo"            :valid? family?}
-   {:path [:ui-font :size]       :default 13                 :valid? font-size?}])
+   {:path [:ui-font :size]       :default 13                 :valid? font-size?}
+   {:path [:theme]               :default theme/default-name :valid? (set theme/names)}])
 
 (def defaults
   (reduce (fn [s {:keys [path default]}] (assoc-in s path default)) {} schema))

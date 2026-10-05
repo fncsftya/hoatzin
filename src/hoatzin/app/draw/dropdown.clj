@@ -4,7 +4,8 @@
   highlighted and the one the dropdown holds ticked, and a thumb showing
   how far down it is."
   (:require [hoatzin.app.boxes :refer [focused-field ui-value]]
-            [hoatzin.app.draw.boxes :refer [draw-text! intersect set-clip!]]
+            [hoatzin.app.draw.boxes :refer [draw-swatches! draw-text! intersect set-clip!
+                                            swatch-width]]
             [hoatzin.app.dropdown :as dropdown]
             [hoatzin.app.face :refer [family-face]]
             [hoatzin.app.state :refer [px]]
@@ -18,7 +19,8 @@
 
 (defn draw-list!
   "The open dropdown list, if any. A dropdown with :fonts? shows each
-  option, a font family's name, in that font."
+  option, a font family's name, in that font, and with :swatches, the
+  option's squares at the right of its row."
   [app]
   (when-let [{[x y w h] :rect [ix iy iw ih :as inner] :inner
               :keys [row-h rows options max-scroll]} (dropdown/place app)]
@@ -45,14 +47,20 @@
                     row (intersect inner [ix ry iw row-h])]
               :when row]
         (let [option (str (nth options i))
+              colours (get (:swatches node) option)
+              right (- (+ ix iw) (px app text-right))
               f      (if (:fonts? node) (family-face app option) (:ui app))]
           (when (= i active)
             (apply fill! (:ui-highlight app) row))
           (when (= option value)
             (draw-text! app (:ui app) [fore tick] tick [ix ry tw row-h] fore true row))
+          (when (seq colours)
+            (set-clip! app row)
+            (draw-swatches! app colours right ry row-h))
           ;; each font's texture is its own, though the text and colour match
           (draw-text! app f [(when (:fonts? node) option) fore option] option
-                      [(+ ix tw) ry (max 0 (- iw tw (px app text-right))) row-h] fore false row)
+                      [(+ ix tw) ry (max 0 (- right ix tw (swatch-width app (count colours) row-h))) row-h]
+                      fore false row)
           (set-clip! app nil)))
       (when (pos? max-scroll)
         (let [th (min ih (max (px app thumb-min) (quot (* ih rows) n)))

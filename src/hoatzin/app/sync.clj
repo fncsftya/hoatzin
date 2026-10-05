@@ -1,6 +1,6 @@
 (ns hoatzin.app.sync
   "Bringing what the app shows up to date with what it holds: the fonts
-  with the settings and the density, the layout with the text and the
+  and colours with the settings and the density, the layout with the text and the
   window's size, and the boxes' places with both."
   (:require [hoatzin.app.boxes :as boxes]
             [hoatzin.app.display :as display]
@@ -8,6 +8,7 @@
             [hoatzin.app.files :as files]
             [hoatzin.app.scroll :as scroll]
             [hoatzin.app.state :refer [px]]
+            [hoatzin.app.theme :as theme]
             [hoatzin.lib.coretext :as ct]
             [hoatzin.lib.layout :as layout]
             [hoatzin.lib.sdl :as sdl]
@@ -54,6 +55,17 @@
                      :dirty? true)
               (assoc-in [:fonts :ui-font] ui-font))))))
 
+(defn- sync-theme
+  "Take the colours of the theme the settings name, when it has changed.
+  The line textures of the text are cached by text alone, so they go."
+  [app]
+  (let [name (:theme (:settings app))]
+    (if (= name (:applied-theme app))
+      app
+      (do (some-> (:textures app) textures/clear!)
+          (-> (merge app (theme/colours name))
+              (assoc :applied-theme name :dirty? true))))))
+
 (defn- sync-size
   "Take the renderer's output size, and wrap the text to fit it."
   [app]
@@ -81,7 +93,7 @@
   comparison unless its inputs changed. Between frames, as this is, it also
   trims the layout's cache."
   [app]
-  (let [app (-> app sync-fonts sync-size files/sync-modified)]
+  (let [app (-> app sync-fonts sync-theme sync-size files/sync-modified)]
     (layout/trim! (:ctx app))
     (let [app (sync-layout app)]
       (assoc app :block-places (boxes/place-blocks app) :float-places (boxes/place-floats app)))))

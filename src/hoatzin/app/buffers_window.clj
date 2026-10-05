@@ -121,8 +121,8 @@
   [app]
   (let [m      (:margin app)
         d      (:density app)
-        fg     (:status-foreground app)
-        dim    (mapv #(quot (+ (* 2 %1) %2) 3) fg (:status-background app))
+        fg     (:foreground app)
+        dim    (mapv #(quot (+ (* 2 %1) %2) 3) fg (:window-background app))
         bs     (buffers/listing app)
         names  (buffers/names bs)
         label  (fn [b] (str (names (:buffer-id b)) (when (buffers/unsaved? b) " [+]")))
@@ -134,7 +134,7 @@
      :style {:position :absolute :left m :top m :right m
              :bottom (+ (/ (status-height app) d) m)
              :padding padding :gap gap :border 1
-             :background (:status-background app) :border-color (:ui-border app)}
+             :background (:window-background app) :border-color (:ui-border app)}
      :children
      ;; the rows in a box of their own, so that only the heading is a gap above them
      [{:kind :label :text "Buffers" :style {:color fg}}

@@ -2,11 +2,13 @@
   "The settings window: a form over the text, opened by `:settings`. Its
   font family dropdowns and font size fields change their settings as
   they are chosen or edited, which applies and saves them straight away.
-  The dropdowns list the fonts installed, from the host's
-  :font-families-fn, each name shown in its own font."
+  The font dropdowns list the fonts installed, from the host's
+  :font-families-fn, each name shown in its own font; the theme dropdown
+  lists the themes, each with its colours."
   (:require [hoatzin.app.face :refer [ui-width]]
             [hoatzin.app.geometry :refer [status-height]]
             [hoatzin.app.settings :as settings]
+            [hoatzin.app.theme :as theme]
             [hoatzin.lib.layout :as layout]))
 
 (def fields
@@ -15,7 +17,8 @@
   {:settings/editor-family {:path [:editor-font :family] :parse identity}
    :settings/editor-size   {:path [:editor-font :size]   :parse parse-long}
    :settings/ui-family     {:path [:ui-font :family]     :parse identity}
-   :settings/ui-size       {:path [:ui-font :size]       :parse parse-long}})
+   :settings/ui-size       {:path [:ui-font :size]       :parse parse-long}
+   :settings/theme         {:path [:theme]               :parse identity}})
 
 (defn open
   "Open the settings window, finding the fonts installed the first time."
@@ -58,7 +61,7 @@
 (defn window
   "The settings, as a form over the text, inset by the margin: a column
   of labels as wide as the widest, and their fields. The fonts can be
-  changed (see `fields`); the rest is read-only for now."
+  changed (see `fields`); the line height is read-only for now."
   [app]
   (let [m      (:margin app)
         [lo hi] settings/font-sizes
@@ -86,16 +89,18 @@
      :style {:position :absolute :left m :top m :right m
              :bottom (+ (/ (status-height app) (:density app)) m)
              :padding padding :gap gap :border 1
-             :background (:status-background app) :border-color (:ui-border app)}
-     :children (let [[editor ui theme line-height] labels]
-                 [{:kind :label :text "Settings" :style {:color (:status-foreground app)}}
+             :background (:window-background app) :border-color (:ui-border app)}
+     :children (let [[editor ui theme-label line-height] labels]
+                 [{:kind :label :text "Settings" :style {:color (:foreground app)}}
                   ;; the key that closes the window, lightly dimmed
                   {:kind :label :text "esc"
                    :style {:position :absolute :top padding :right padding
                            :color (mapv #(quot (+ (* 2 %1) %2) 3)
-                                        (:status-foreground app) (:status-background app))}}
+                                        (:foreground app) (:window-background app))}}
                   (font editor "editor" :editor-font)
                   (font ui "ui" :ui-font)
-                  (row theme (shown :settings/theme "default"))
+                  (row theme-label {:kind :dropdown :id :settings/theme
+                              :value (:theme (:settings app)) :options theme/names
+                              :swatches (theme/swatches) :style {:width 0 :grow 1}})
                   (row line-height (shown :settings/line-height layout/line-spacing
                                           size-width))])}))

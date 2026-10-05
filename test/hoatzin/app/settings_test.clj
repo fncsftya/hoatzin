@@ -4,7 +4,8 @@
             [hoatzin.app.settings :as settings]))
 
 (deftest defaults
-  (is (= {:editor-font {:family "Georgia" :size 20} :ui-font {:family "Menlo" :size 13}}
+  (is (= {:editor-font {:family "Georgia" :size 20} :ui-font {:family "Menlo" :size 13}
+          :theme "Dark 3"}
          settings/defaults)))
 
 (deftest changing
@@ -14,12 +15,15 @@
   (is (nil? (settings/change settings/defaults [:editor-font :size] 73)) "too big")
   (is (nil? (settings/change settings/defaults [:editor-font :size] 20.5)) "not whole")
   (is (nil? (settings/change settings/defaults [:ui-font :family] " ")) "no family")
-  (is (nil? (settings/change settings/defaults [:theme] "dark")) "not a setting"))
+  (is (nil? (settings/change settings/defaults [:colour] "Dark 1")) "not a setting")
+  (is (= "Light 2" (:theme (settings/change settings/defaults [:theme] "Light 2"))))
+  (is (nil? (settings/change settings/defaults [:theme] "Sepia")) "not a theme"))
 
 (deftest json
   (testing "what the JSON has, where it is valid; defaults for the rest"
     (is (= settings/defaults (settings/read-json "{}")))
-    (is (= {:editor-font {:family "Georgia" :size 18} :ui-font {:family "Menlo" :size 13}}
+    (is (= {:editor-font {:family "Georgia" :size 18} :ui-font {:family "Menlo" :size 13}
+            :theme "Dark 3"}
            (settings/read-json "{\"editor-font\": {\"size\": 18}}")))
     (is (= settings/defaults
            (settings/read-json "{\"editor-font\": {\"size\": \"big\"}, \"ui-font\": 3, \"x\": 1}")))

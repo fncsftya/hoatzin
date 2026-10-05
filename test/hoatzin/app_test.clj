@@ -8,6 +8,7 @@
             [hoatzin.app.command :as command]
             [hoatzin.app.dropdown :as dropdown]
             [hoatzin.app.geometry :as geo]
+            [hoatzin.app.theme :as theme]
             [hoatzin.lib.layout :as layout]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.test-support :as t :refer [with-session]]))
@@ -1292,7 +1293,7 @@
             :settings/editor-size   "20"
             :settings/ui-family     "Menlo"
             :settings/ui-size       "13"
-            :settings/theme         "default"
+            :settings/theme         "Dark 3"
             :settings/line-height   "1.3"}
            (settings-values s)))
     (is (= :arrow (app/pointer (t/app s))))
@@ -1326,7 +1327,7 @@
 (deftest editing-font-sizes
   (with-session [s :mode :normal]
     (t/command! s "settings")
-    (click-field! s :settings/theme)
+    (click-field! s :settings/line-height)
     (is (nil? (:focus (t/app s))) "a read-only field takes no focus")
     (click-field! s :settings/editor-size)
     (is (= :settings/editor-size (:focus (t/app s))))
@@ -1365,7 +1366,11 @@
       (t/press! s sdl/K-TAB)
       (is (= :settings/ui-size (:focus (t/app s))))
       (t/press! s sdl/K-TAB)
+      (is (= :settings/theme (:focus (t/app s))))
+      (t/press! s sdl/K-TAB)
       (is (= :settings/editor-family (:focus (t/app s))) "wrapping around")
+      (t/press! s sdl/K-TAB sdl/KMOD-SHIFT)
+      (is (= :settings/theme (:focus (t/app s))))
       (t/press! s sdl/K-TAB sdl/KMOD-SHIFT)
       (is (= :settings/ui-size (:focus (t/app s)))))
     (testing "given up, a field shows its setting, not what was typed"
@@ -1547,6 +1552,21 @@
         (is (nil? (list-of s)))
         (is (= option (family s :ui-font)))
         (is (= option (get-in (t/app s) [:fonts :ui-font :family])) "the UI font applies at once")))))
+
+(deftest choosing-a-theme
+  (with-session [s :mode :normal]
+    (t/command! s "settings")
+    (is (= (theme/colours "Dark 3") (select-keys (t/app s) (keys (theme/colours "Dark 3")))))
+    (click-field! s :settings/theme)
+    (is (= 5 (:active (list-of s))) "on the theme in use")
+    (t/press! s sdl/K-HOME)
+    (t/press! s sdl/K-RETURN)
+    (is (= "Light 1" (get-in (t/app s) [:settings :theme])))
+    (is (= "Light 1" (get-in @s [:saved-settings :theme])) "saving it")
+    (t/render! s)
+    (is (= [255 255 255] (:background (t/app s))) "its colours apply at once")
+    (is (= [0 0 0] (:foreground (t/app s))))
+    (is (= [90 125 124] (:status-background (t/app s))))))
 
 (deftest typing-into-a-font-family-list
   (with-session [s :mode :normal]

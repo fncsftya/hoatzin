@@ -103,8 +103,8 @@
   as the widest and what they do."
   [app]
   (let [m     (:margin app)
-        fg    (:status-foreground app)
-        dim   (mapv #(quot (+ (* 2 %1) %2) 3) fg (:status-background app))
+        fg    (:foreground app)
+        dim   (mapv #(quot (+ (* 2 %1) %2) 3) fg (:window-background app))
         key-w (/ (reduce max (map #(ui-width app (first %)) (mapcat second commands)))
                  (:density app))
         start (min (:help-scroll app 0) (max-scroll app))
@@ -114,7 +114,7 @@
      :style {:position :absolute :left m :top m :right m
              :bottom (+ (/ (status-height app) (:density app)) m)
              :padding padding :gap gap :border 1
-             :background (:status-background app) :border-color (:ui-border app)}
+             :background (:window-background app) :border-color (:ui-border app)}
      :children
      (into [{:kind :label :text "Help" :style {:color fg}}
             {:kind :label :text (if more? "up/down to scroll   esc" "esc")

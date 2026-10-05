@@ -18,7 +18,11 @@
                                              list that opens below it; as
                                              wide as a field. With :fonts?,
                                              the options are font families,
-                                             each listed in its own font
+                                             each listed in its own font.
+                                             With :swatches, a map of
+                                             option to colours [[r g b]
+                                             ...], each is shown as squares
+                                             at the right of its option
     {:kind :button :id id :text s}
     {:kind :checkbox :id id :value bool}
   Interactive nodes (fields, dropdowns, buttons, checkboxes) need an :id: the app keeps

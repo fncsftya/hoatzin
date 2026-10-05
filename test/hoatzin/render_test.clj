@@ -137,6 +137,16 @@
     (t/press! s sdl/K-END)
     (t/matches-golden? "block-caret-at-a-line-end" (t/render! s))))
 
+(deftest ^:integration block-caret-in-a-light-theme
+  ;; black text on white: the block is black, and the character in it white
+  (with-session [s]
+    (swap! s assoc-in [:app :settings :theme] "Light 1")
+    (t/type! s hoatzin-text)
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-UP cmd)
+    (dotimes [_ 4] (t/press! s sdl/K-RIGHT))
+    (t/matches-golden? "block-caret-light" (t/render! s))))
+
 (deftest ^:integration command-line
   (with-session [s]
     (t/type! s hoatzin-text)
@@ -231,6 +241,18 @@
                {:type :move :x (double (+ ix (quot iw 2)))
                 :y (double (- (+ iy (* 8 row-h) (quot row-h 2)) scroll))}))
     (t/matches-golden? "settings-font-list" (t/render! s))))
+
+(deftest ^:integration settings-theme-list
+  ;; the theme list open, the pointer on Light 3, the theme in use ticked
+  (with-session [s]
+    (t/type! s hoatzin-text)
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "settings")
+    (click-field! s :settings/theme)
+    (let [{[ix iy iw] :inner :keys [row-h]} (dropdown/place (t/app s))]
+      (t/send! s {:type :move :x (double (+ ix (quot iw 2)))
+                  :y (double (+ iy (* 2 row-h) (quot row-h 2)))}))
+    (t/matches-golden? "settings-theme-list" (t/render! s))))
 
 (deftest ^:integration settings-editing
   ;; a font size field with the focus, being typed into; then the window
