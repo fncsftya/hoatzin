@@ -2,7 +2,7 @@
   "Drawing placed boxes (see hoatzin.lib.ui/place), in the UI font and
   the app's colours where their style sets none."
   (:require [hoatzin.app.boxes :refer [ui-value]]
-            [hoatzin.app.face :refer [face-line face-width]]
+            [hoatzin.app.face :refer [face-line face-width family-face]]
             [hoatzin.app.state :refer [px]]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.lib.textures :as textures]
@@ -55,11 +55,16 @@
 (def ^:private arrow-gap "Points between a dropdown's value and its arrow." 4)
 
 (defn- draw-dropdown!
-  "A dropdown's value, in the UI font, and its arrow at the right."
+  "A dropdown's value, and its arrow at the right in the UI font. The
+  value is in the UI font too, unless the dropdown has :fonts?: then it
+  is in the font family it names."
   [app node [cx cy cw ch] color clip]
-  (let [aw (min cw (face-width (:ui app) arrow))]
-    (draw-ui-text! app (str (ui-value app node))
-                   [cx cy (max 0 (- cw aw (px app arrow-gap))) ch] color false clip)
+  (let [aw    (min cw (face-width (:ui app) arrow))
+        value (str (ui-value app node))
+        rect  [cx cy (max 0 (- cw aw (px app arrow-gap))) ch]]
+    (if (:fonts? node)
+      (draw-text! app (family-face app value) [value color value] value rect color false clip)
+      (draw-ui-text! app value rect color false clip))
     (draw-ui-text! app arrow [(- (+ cx cw) aw) cy aw ch] (:status-foreground app) true clip)))
 
 (defn draw-boxes!

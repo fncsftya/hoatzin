@@ -89,6 +89,11 @@
              :background (:status-background app) :border-color (:ui-border app)}
      :children (let [[editor ui theme line-height] labels]
                  [{:kind :label :text "Settings" :style {:color (:status-foreground app)}}
+                  ;; the key that closes the window, lightly dimmed
+                  {:kind :label :text "esc"
+                   :style {:position :absolute :top padding :right padding
+                           :color (mapv #(quot (+ (* 2 %1) %2) 3)
+                                        (:status-foreground app) (:status-background app))}}
                   (font editor "editor" :editor-font)
                   (font ui "ui" :ui-font)
                   (row theme (shown :settings/theme "default"))
