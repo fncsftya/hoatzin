@@ -126,6 +126,7 @@
             [hoatzin.app.input.mouse :as mouse]
             [hoatzin.app.insets :as insets]
             [hoatzin.app.modes :as modes]
+            [hoatzin.app.rename :as rename]
             [hoatzin.app.scroll :as scroll]
             [hoatzin.app.settings :as settings]
             [hoatzin.app.state :as state]
@@ -197,12 +198,19 @@
         click      #(mouse/on-click % now (:x event) (:y event) (:mod event 0) (:clicks event 1))]
     (case (:type event)
       :quit   (assoc app :quit? true)
-      :text   (cond (state/command? app) (keyboard/on-text app now (:text event))
-                    (and (normal? app) (modes/normal-command app (:text event)))
-                    ((modes/normal-command app (:text event)) app now)
-                    :else (in-text #(keyboard/on-text % now (:text event))))
+      ;; Over a folded section there is no text to edit: only the
+      ;; commands that leave it alone work.
+      :text   (if (state/command? app)
+                (keyboard/on-text app now (:text event))
+                (or (when (normal? app)
+                      (some-> (modes/normal-command app (:text event)) (as-> f (f app now))))
+                    (if (insets/over app)
+                      (if (and (normal? app) (#{":" "?"} (:text event)))
+                        (keyboard/on-text app now (:text event))
+                        app)
+                      (in-text #(keyboard/on-text % now (:text event))))))
       ;; Normal mode has no use for the input method's marked text.
-      :composition (if (state/insert? app)
+      :composition (if (and (state/insert? app) (not (insets/over app)))
                      (in-text #(keyboard/compose % now (:text event) (:cursor event)))
                      app)
       ;; While composing, keys and clicks belong to the input method, and the
@@ -210,10 +218,13 @@
       :key    (let [{:keys [key mod] :or {mod 0}} event]
                 (cond composing? app
                       (state/command? app) (command/on-key app now key)
-                      (and (normal? app) (modes/normal-key app key mod))
-                      ((modes/normal-key app key mod) app now)
-                      :else (or (insets/cross app now key mod)
-                                (in-text #(keyboard/on-key % now key mod)))))
+                      :else (or (some-> (cond (normal? app)       (modes/normal-key app key mod)
+                                              (state/insert? app) (modes/insert-key app key mod))
+                                        (as-> f (f app now)))
+                                (insets/cross app now key mod)
+                                (if (insets/over app)
+                                  (if (= sdl/K-ESCAPE key) (state/enter-mode app now :normal) app)
+                                  (in-text #(keyboard/on-key % now key mod))))))
       ;; The scroll bar leaves the document alone, so it works while composing.
       ;; Boxes take the clicks on them, over the text and the scroll bar;
       ;; a click anywhere else gives up the focus. A click in an inset puts
@@ -225,7 +236,7 @@
                   inset (let [app (fields/blur app)]
                           (if (and composing? (= :body (:part inset)))
                             app
-                            (insets/click app now inset click)))
+                            (insets/click app now x y click)))
                   hit   (fields/on-ui-click app now hit)
                   :else (let [app (fields/blur app)]
                           (cond (scroll/on-scrollbar? app x) (scroll/on-scrollbar-click app y)
@@ -270,10 +281,12 @@
         app (if (and (:list app) (nil? (dropdown/place app))) (dropdown/close app) app)
         ;; and a list closes as the window loses the focus
         app (if (and (= :focus (:type event)) (not (:focused? event))) (dropdown/close app) app)
+        app (rename/keep-for app event)
         app (dropdown/glide app now)
         app (scroll/glide app now)]
     (or
       (when (:confirm app) (confirm/on-event app now event))
+      (when (:renaming app) (rename/on-event app event))
       (when (:list app) (dropdown/on-event app now event))
       (when (:focus app) (fields/on-focus-event app now event))
       (when (:window app) (fields/on-window-event app now event))

@@ -3,64 +3,99 @@
   to the text area; the scroll bar and the status bar; then the floats,
   and an open dropdown list over them."
   (:require [hoatzin.app.caret :refer [caret-visible?]]
-            [hoatzin.app.draw.boxes :refer [draw-boxes! intersect set-clip!]]
+            [hoatzin.app.draw.boxes :refer [draw-boxes! draw-text! intersect set-clip!]]
             [hoatzin.app.draw.caret :refer [draw-bar-caret! draw-block-caret!]]
             [hoatzin.app.draw.chrome :refer [draw-scrollbar! draw-status-bar!]]
             [hoatzin.app.draw.dropdown :refer [draw-list!]]
             [hoatzin.app.draw.text :refer [draw-selection! draw-lines! draw-composition!]]
-            [hoatzin.app.geometry :refer [view-height visible-lines]]
+            [hoatzin.app.geometry :refer [line-top origin view-height visible-lines]]
             [hoatzin.app.insets :as insets]
             [hoatzin.app.state :refer [px insert? command?]]
+            [hoatzin.lib.layout :as layout]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.lib.textures :as textures]
             [jolt.ffi :as ffi]))
 
-(defn- text-clip
-  "Where view `v` of an inset shows its text, within `clip`, or nil."
-  [v clip]
-  (let [[ox oy] (:origin v)]
-    (intersect clip [ox oy (:view-w v) (view-height v)])))
+(declare draw-blocks!)
 
-(defn- draw-inset-text!
-  "The text of inset `b`, as placed, if it is unfolded and shows within
-  `clip`: its selection, its lines, any composition, and its scroll
-  thumb if it scrolls."
-  [app b clip]
-  (when-let [v (insets/view app (:inset b))]
-    (when-let [c (text-clip v clip)]
-      (let [[k0 k1] (visible-lines v)]
-        (set-clip! app c)
+(defn- draw-markers!
+  "The bullets, or boxes, before the items in view of list `i`, seen as
+  view `v`, in the gutter at the left of its text."
+  [v i k0 k1]
+  (let [{:keys [renderer scratch scroll]} v
+        [ox oy] (origin v)
+        lh   (layout/line-height (:layout v))
+        gw   (px v insets/gutter)
+        side (px v 10)
+        bw   (max 1 (px v 1))
+        fill! (fn [[r g b] x y w h]
+                (sdl/set-render-draw-color renderer r g b 255)
+                (sdl/render-fill-rect renderer (sdl/set-frect! (:frect scratch) x y w h)))]
+    (doseq [[k checked?] (insets/markers v i k0 k1)
+            :let [y (+ oy (- (line-top v k) scroll))]]
+      (if (nil? checked?)
+        (draw-text! v (:ui v) [:bullet (:foreground v)] "•" [(- ox gw) y gw lh] (:foreground v) true (:clip v))
+        (let [x (+ (- ox gw) (quot (- gw side) 2))
+              y (+ y (quot (- lh side) 2))]
+          (fill! (:ui-border v) x y side side)
+          (fill! (if checked? (:ui-accent v) (:background v))
+                 (+ x bw) (+ y bw) (- side bw bw) (- side bw bw)))))))
+
+(defn- draw-inset!
+  "The text of `level`'s inset `b`, as placed, if it is unfolded and
+  shows: its selection, its lines, any composition and its own insets,
+  within where it shows; and its scroll thumb if it scrolls, within
+  `clip`."
+  [level b clip]
+  (when-let [v (insets/view level (:inset b))]
+    (when-let [c (:clip v)]
+      (let [[k0 k1] (visible-lines v)
+            i (get-in level [:insets (:inset b)])]
+        (set-clip! level c)
         (draw-selection! v k0 k1)
         (draw-lines! v k0 k1)
         (draw-composition! v k0 k1)
-        (set-clip! app clip)))
-    (when-let [[x y w h] (insets/thumb app (get-in app [:insets (:inset b)]) b)]
-      (let [{:keys [renderer scratch scroll]} app
-            m (px app (:margin app))
-            [r g b] (:scrollbar-thumb app)]
+        (draw-blocks! v c)
+        (when-not (insets/section? i)
+          ;; the gutter is left of the text, outside where it shows
+          (let [[_ cy _ ch] c
+                [ox] (origin v)
+                gw (px v insets/gutter)]
+            (when-let [gc (intersect clip [(- ox gw) cy gw ch])]
+              (set-clip! level gc)
+              (draw-markers! (assoc v :clip gc) i k0 k1))))
+        (set-clip! level clip)))
+    (when-let [[x y w h] (insets/thumb level (get-in level [:insets (:inset b)]) b)]
+      (let [{:keys [renderer scratch scroll]} level
+            [ox oy] (origin level)
+            [r g b] (:scrollbar-thumb level)]
         (sdl/set-render-draw-color renderer r g b 255)
-        (sdl/render-fill-rect renderer (sdl/set-frect! (:frect scratch) (+ m x) (+ m (- y scroll)) w h))))))
+        (sdl/render-fill-rect renderer (sdl/set-frect! (:frect scratch) (+ ox x) (+ oy (- y scroll)) w h))))))
 
 (defn- draw-blocks!
-  "The blocks at least partly in view, clipped to the text area `clip`,
-  and the insets' text in them."
-  [app clip]
-  (let [{:keys [scroll]} app
-        m  (px app (:margin app))
-        vh (view-height app)]
-    (doseq [{:keys [top height placed] :as b} (:block-places app)
+  "`level`'s blocks at least partly in view, clipped to `clip`, where its
+  text shows, and the insets' text in them."
+  [level clip]
+  (let [{:keys [scroll]} level
+        [ox oy] (origin level)
+        vh (view-height level)]
+    (doseq [{:keys [top height placed] :as b} (:block-places level)
             :when (and (< top (+ scroll vh)) (> (+ top height) scroll))]
-      (draw-boxes! app placed m (- m scroll) clip)
-      (when (:inset b) (draw-inset-text! app b clip)))))
+      (draw-boxes! level placed ox (- oy scroll) clip)
+      (when (:inset b) (draw-inset! level b clip)))))
 
 (defn- draw-text-caret!
   "The caret in the text, or in the inset it is in, within `clip`: a bar
-  in insert mode, a block in normal mode."
+  in insert mode, a block in normal mode; a bar in the title of a section
+  being renamed; none over a folded section, whose header shows it."
   [app clip]
-  (let [t (or (some->> (:inset app) (insets/view app)) app)]
-    (when-let [c (if (= t app) clip (text-clip t clip))]
-      (set-clip! app c)
-      (if (insert? t) (draw-bar-caret! t) (draw-block-caret! t)))))
+  (cond
+    (:renaming app) (do (set-clip! app clip) (draw-bar-caret! app))
+    (insets/over app) nil
+    :else (let [t (insets/innermost-view app)]
+            (when-let [c (if (= t app) clip (:clip t))]
+              (set-clip! app c)
+              (if (insert? t) (draw-bar-caret! t) (draw-block-caret! t))))))
 
 (defn draw!
   "Render the app at time `now` (ms), present it, and return the app."

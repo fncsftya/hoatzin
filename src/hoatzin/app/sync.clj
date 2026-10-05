@@ -15,9 +15,9 @@
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.lib.textures :as textures]))
 
-(defn- release-editor-view! [{:keys [ctx inset-ctx textures font]}]
+(defn- release-editor-view! [{:keys [ctx textures font] :as app}]
   (some-> ctx layout/release-context)
-  (some-> inset-ctx layout/release-context)
+  (insets/release-contexts! app)
   (some-> textures textures/clear!)
   (some-> font ct/release-font))
 
@@ -47,7 +47,7 @@
               (do (release-editor-view! app)
                   (-> app
                       (assoc :font (ct/font (:family editor-font) (* (:size editor-font) density))
-                             :ctx nil :inset-ctx nil :dirty? true)
+                             :ctx nil :inset-ctxs {} :dirty? true)
                       (assoc-in [:fonts :editor-font] editor-font))))]
     (if (and (not new-density?) (= ui-font (get-in app [:fonts :ui-font])))
       app
@@ -77,10 +77,10 @@
         app (if (= wrap (get-in app [:ctx :width]))
               app
               (do (some-> (:ctx app) layout/release-context)
-                  (some-> (:inset-ctx app) layout/release-context)
+                  (insets/release-contexts! app)
                   ;; Re-wrapping moves every line; keep the caret's in view.
                   (assoc app :ctx (layout/context (:font app) wrap) :layout nil :follow? true
-                         :inset-ctx (layout/context (:font app) (insets/wrap-width app wrap)))))]
+                         :inset-ctxs {})))]
     (if (= size (:size app)) app (assoc app :size size :dirty? true))))
 
 (defn- sync-layout
@@ -101,7 +101,7 @@
   (let [app (-> app sync-fonts sync-theme sync-size files/sync-modified)]
     (layout/trim! (:ctx app))
     (let [app (-> app sync-layout insets/sync-layouts)]
-      (assoc app :block-places (boxes/place-blocks app) :float-places (boxes/place-floats app)))))
+      (assoc (boxes/place-all app) :float-places (boxes/place-floats app)))))
 
 (defn settle
   "Sync the view, then scroll as the last batch of events asked."

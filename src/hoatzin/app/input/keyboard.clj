@@ -7,6 +7,7 @@
             [hoatzin.app.geometry :refer [caret-or view-height]]
             [hoatzin.app.history :as history]
             [hoatzin.app.input.motion :refer [move-to move-on-line move-lines]]
+            [hoatzin.app.insets :as insets]
             [hoatzin.app.state :refer [insert? touched enter-mode]]
             [hoatzin.lib.editor :as ed]
             [hoatzin.lib.layout :as layout]
@@ -68,6 +69,21 @@
       (-> app (assoc :doc (ed/select (ed/move doc lo) hi) :goal-x nil :upstream? false)
           (touched now))
       app)))
+
+(defn- delete-forward
+  "Delete the selection, or else the character after the caret, in normal
+  mode as in insert mode; not the end of a paragraph an inset (see
+  hoatzin.app.insets) is below, which would take the paragraph after it
+  up past the inset."
+  [app now]
+  (let [{:keys [caret] :as doc} (:doc app)
+        [lo hi] (or (ed/selection doc) [caret (layout/next-position (:layout app) caret)])]
+    (if (or (= lo hi) (and (not (ed/selection doc)) (insets/inset-after? app caret)))
+      app
+      (-> app
+          (assoc :doc (ed/delete doc lo hi) :goal-x nil :upstream? false)
+          (history/record doc lo hi "")
+          (touched now)))))
 
 (defn- characters
   "`n` characters, as a message says it."
@@ -153,6 +169,7 @@
                             :else app)
       sdl/K-E         (if (and ctrl? (insert? app)) (to-line-end caret) app)
       sdl/K-C         (if cmd? (copy! app) app)
+      sdl/K-K         (if (and cmd? (not shift?) (normal? app)) (insets/delete-line app now) app)
       sdl/K-X         (if (and cmd? (insert? app)) (cut! app now) app)
       sdl/K-V         (if (and cmd? (insert? app)) (paste! app now) app)
       app)))
@@ -183,6 +200,7 @@
       "O" (open-line app now true)
       "c" (copy! app)
       "x" (cut! app now)
+      "k" (delete-forward app now)
       "p" (paste! app now)
       "0" (move-to app now false (first (logical-line (:text (:doc app)) (:caret (:doc app)))))
       "^" (let [{:keys [text caret]} (:doc app)

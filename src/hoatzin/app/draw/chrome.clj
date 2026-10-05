@@ -39,6 +39,7 @@
   [{:keys [mode message] :as app}]
   (cond (= mode :command) (command/line-text app)
         (:confirm app)    (confirm/prompt app)
+        (:renaming app)   "Renaming: return keeps, esc cancels"
         message           message
         :else             (mode-labels mode)))
 

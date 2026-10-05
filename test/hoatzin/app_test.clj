@@ -1300,58 +1300,73 @@
 
 ;; ---------------------------------------------------------------- auk sections
 
-(defn- sections
-  "The insets as a file has them: [[after text] ...]."
-  [s]
-  (insets/snapshot (t/app s)))
+(defn- tree
+  "Insets as `insets/snapshot` gives them, as [after text] or [after text
+  [inner ...]]."
+  [specs]
+  (mapv (fn [{:keys [after text insets]}] (cond-> [after text] (seq insets) (conj (tree insets)))) specs))
+
+(defn- sections [s] (tree (insets/snapshot (t/app s))))
 
 (defn- in-section
   "The text of the section the caret is in, or nil."
   [s]
-  (some-> (insets/active (t/app s)) :doc :text str))
+  (some-> (insets/innermost (t/app s)) :doc :text str))
+
+(defn- section-caret [s] (:caret (:doc (insets/innermost (t/app s)))))
 
 (defn- section-place [s id] (insets/place-of (t/app s) id))
 
 (defn- auk! [s data] (open! s "/notes/n.auk" (pr-str data)))
 
+(defn- ref [id] {:type :section :ref id})
+
 (deftest auk-reads-and-writes-sections
   (with-session [s :mode :normal]
-    (auk! s {:content [{:type :section :ref 7} "one" {:type :section :ref 3} {:type :section :ref 5} "two"]
-             :sections [{:id 3 :content "below one"} {:id 5 :content "and another\nof two lines"}
-                        {:id 7 :content "above"}]})
+    (auk! s {:content [(ref 7) "one" (ref 3) "two"]
+             :sections [{:id 3 :content ["below one" (ref 5)]}
+                        {:id 5 :content ["inner" "of two lines"]}
+                        {:id 7 :content ["above"]}]})
     (is (= "one\ntwo" (t/text s)) "the strings are the text")
-    (is (= [[-1 "above"] [0 "below one"] [0 "and another\nof two lines"]] (sections s))
-        "and the sections are where :content has them")
+    (is (= [[-1 "above"] [0 "below one" [[0 "inner\nof two lines"]]]] (sections s))
+        "the sections are where :content has them, and theirs where theirs does")
     (is (not (:modified? (t/app s))))
     (t/command! s "w")
     (is (= (str "{:content\n"
                 " [{:type :section :ref 1}\n"
                 "  \"one\"\n"
                 "  {:type :section :ref 2}\n"
-                "  {:type :section :ref 3}\n"
                 "  \"two\"]\n"
                 " :sections\n"
-                " [{:id 1 :content \"above\"}\n"
-                "  {:id 2 :content \"below one\"}\n"
-                "  {:id 3 :content \"and another\\nof two lines\"}]}\n")
+                " [{:id 1 :content [\"above\"]}\n"
+                "  {:id 2 :content [\"below one\" {:type :section :ref 3}]}\n"
+                "  {:id 3 :content [\"inner\" \"of two lines\"]}]}\n")
            (get-in @s [:files "/notes/n.auk"]))
-        "written back numbered down the text")
+        "written back numbered as they come")
     (testing "a note of nothing but sections"
-      (open! s "/notes/alone.auk" (pr-str {:content [{:type :section :ref 1}]
-                                           :sections [{:id 1 :content "alone"}]}))
+      (open! s "/notes/alone.auk" (pr-str {:content [(ref 1)] :sections [{:id 1 :content ["alone"]}]}))
       (t/command! s "w")
-      (is (= "{:content\n [{:type :section :ref 1}]\n :sections\n [{:id 1 :content \"alone\"}]}\n"
+      (is (= "{:content\n [{:type :section :ref 1}]\n :sections\n [{:id 1 :content [\"alone\"]}]}\n"
              (get-in @s [:files "/notes/alone.auk"]))))))
 
 (deftest auk-refuses-sections-it-cannot-place
   (with-session [s :mode :normal]
-    (doseq [[data why] [[{:content [{:type :section :ref 1}]} "no section 1"]
-                        [{:content [] :sections [{:id 1 :content "x"}]} "section 1 is not in :content"]
-                        [{:content [{:type :section :ref 1} {:type :section :ref 1}]
-                          :sections [{:id 1 :content "x"}]} "section 1 is in :content twice"]
-                        [{:content [] :sections [{:id 1 :content 2}]} "section 1's :content must be a string"]
-                        [{:content [{:type :section :ref 1 :open? true}] :sections [{:id 1 :content "x"}]}
-                         ":content must be a vector of strings and {:type :section :ref id}"]]]
+    (doseq [[data why] [[{:content [(ref 1)]} "no section 1"]
+                        [{:content [] :sections [{:id 1 :content ["x"]}]} "section 1 is not referred to"]
+                        [{:content [(ref 1) (ref 1)] :sections [{:id 1 :content ["x"]}]}
+                         "section 1 is referred to twice"]
+                        [{:content [(ref 1)] :sections [{:id 1 :content [(ref 1)]}]}
+                         "section 1 is referred to twice"]
+                        [{:content [(ref 1)] :sections [{:id 1 :content "x"}]}
+                         "section 1's :content must be a vector of strings"]
+                        [{:content [{:type :section :ref 1 :open? true}] :sections [{:id 1 :content ["x"]}]}
+                         ":content must be a vector of strings"]
+                        [{:content [{:type :list :content [{:text "a" :checked? true}]}]}
+                         ":content must be a vector of strings"]
+                        [{:content [{:type :checklist :content [{:text "a" :checked? "yes"}]}]}
+                         ":content must be a vector of strings"]
+                        [{:content [(ref 1)] :sections [{:id 1 :title 2 :content ["x"]}]}
+                         "section 1's :title must be a string"]]]
       (auk! s data)
       (is (str/starts-with? (:message (t/app s)) (str "Can't open n.auk: " why)) (pr-str data)))
     (is (= ["scratch"] (buffer-names s)))))
@@ -1361,25 +1376,48 @@
     (auk! s {:content ["one" "two"]})
     (t/press! s sdl/K-S cmd)
     (is (= [[0 ""]] (sections s)) "below the line the caret is in")
-    (is (= "" (in-section s)) "with the caret in it")
+    (is (= "one\n\ntwo" (t/text s)) "with a new line after it")
+    (is (= "" (in-section s)) "and the caret in it")
     (is (= :normal (:mode (t/app s))) "still in normal mode")
     (is (:modified? (t/app s)))
     (t/type! s "i")
     (t/type! s "a note")
     (is (= "a note" (in-section s)) "typing goes into the section")
-    (is (= "one\ntwo" (t/text s)) "and leaves the text alone")
+    (is (= "one\n\ntwo" (t/text s)) "and leaves the text alone")
     (t/press! s sdl/K-ESCAPE)
     (t/press! s sdl/K-S cmd)
-    (is (= [[0 "a note"] [0 ""]] (sections s)) "in a section, a new one goes below it")
+    (is (= [[0 "a note\n" [[0 ""]]]] (sections s)) "in a section, a new one goes in it")
+    (is (= "" (in-section s)) "with the caret in that")
     (t/command! s "w")
-    (is (= (str "{:content\n [\"one\"\n  {:type :section :ref 1}\n  {:type :section :ref 2}\n  \"two\"]\n"
-                " :sections\n [{:id 1 :content \"a note\"}\n  {:id 2 :content \"\"}]}\n")
+    (is (= (str "{:content\n [\"one\"\n  {:type :section :ref 1}\n  \"\"\n  \"two\"]\n"
+                " :sections\n [{:id 1 :content [\"a note\" {:type :section :ref 2} \"\"]}\n"
+                "  {:id 2 :content [\"\"]}]}\n")
            (get-in @s [:files "/notes/n.auk"])))
     (is (not (:modified? (t/app s))))
     (testing "only in auk mode"
       (t/command! s "mode text")
       (t/press! s sdl/K-S cmd)
-      (is (= 2 (count (sections s)))))))
+      (is (= [[0 "a note\n" [[0 ""]]]] (sections s))))))
+
+(deftest the-line-after-a-section-is-where-the-next-goes
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one"]})
+    (t/press! s sdl/K-S cmd)
+    (t/press! s sdl/K-DOWN)
+    (is (nil? (in-section s)) "down from the section")
+    (is (= 4 (t/caret s)) "is the new line after it")
+    (t/press! s sdl/K-S cmd)
+    (is (= [[0 ""] [0 ""]] (sections s)) "on an empty line, a section takes its place")
+    (is (= "one\n" (t/text s)) "and adds no line: the empty one is after it")
+    (t/press! s sdl/K-DOWN)
+    (is (= 4 (t/caret s)))))
+
+(deftest a-section-on-an-empty-first-line-goes-above-it
+  (with-session [s :mode :normal]
+    (auk! s {:content ["" "two"]})
+    (t/press! s sdl/K-S cmd)
+    (is (= [[-1 ""]] (sections s)))
+    (is (= "\ntwo" (t/text s)))))
 
 (deftest a-section-grows-to-ten-lines-then-scrolls
   (with-session [s :mode :normal]
@@ -1398,73 +1436,137 @@
       (t/press! s sdl/K-UP cmd)
       (is (zero? (get-in (t/app s) [:insets id :scroll])) "and back up with it"))))
 
+(deftest a-section-in-a-section-makes-room-in-it
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" (ref 1)] :sections [{:id 1 :content ["outer" (ref 2)]} {:id 2 :content ["inner"]}]})
+    (let [lh (layout/line-height (:layout (t/app s)))
+          [_ _ _ outer-h] (:text (section-place s 0))
+          inner-h (:height (first (:block-places (get-in (t/app s) [:insets 0]))))]
+      (is (= (+ lh inner-h) outer-h) "the outer section is its line and the inner one")
+      (t/press! s sdl/K-DOWN)
+      (t/press! s sdl/K-DOWN)
+      (is (= "inner" (in-section s)))
+      (t/type! s "A")
+      (t/type! s "\nmore")
+      (let [[_ _ _ h] (:text (section-place s 0))]
+        (is (= (+ outer-h lh) h) "and grows as the inner one does")))))
+
 (deftest up-and-down-cross-into-and-out-of-sections
   (with-session [s :mode :normal]
-    (auk! s {:content ["one" {:type :section :ref 1} "two"] :sections [{:id 1 :content "a\nb"}]})
+    (auk! s {:content ["one" (ref 1) "two"] :sections [{:id 1 :content ["a" "b"]}]})
     (t/press! s sdl/K-DOWN)
     (is (= "a\nb" (in-section s)) "down from the line above goes in")
-    (is (zero? (:caret (:doc (insets/active (t/app s))))) "at its first line")
+    (is (zero? (section-caret s)) "at its first line")
     (t/press! s sdl/K-DOWN)
-    (is (= 2 (:caret (:doc (insets/active (t/app s))))) "down within it")
+    (is (= 2 (section-caret s)) "down within it")
     (t/press! s sdl/K-DOWN)
     (is (nil? (in-section s)) "down from its last line comes out")
     (is (= 4 (t/caret s)) "on the line below")
     (t/press! s sdl/K-UP)
-    (is (= 2 (:caret (:doc (insets/active (t/app s))))) "up from the line below goes in at its last line")
+    (is (= 2 (section-caret s)) "up from the line below goes in at its last line")
     (t/press! s sdl/K-UP)
     (t/press! s sdl/K-UP)
     (is (nil? (in-section s)) "and up from its first comes out")
     (is (= 0 (t/caret s)))
-    (testing "a folded section is passed over"
+    (testing "the caret stops over a folded section"
       (let [[x y _ h] (:header (section-place s 0))]
         (t/click! s (+ 48.0 x 10) (+ 48.0 y (quot h 2))))
       (is (get-in (t/app s) [:insets 0 :collapsed?]))
       (t/press! s sdl/K-DOWN)
-      (is (nil? (in-section s)))
-      (is (= 4 (t/caret s))))))
+      (is (insets/over (t/app s)) "on the way down")
+      (t/press! s sdl/K-DOWN)
+      (is (nil? (insets/path (t/app s))))
+      (is (= 4 (t/caret s)) "and goes on to the line below")
+      (t/press! s sdl/K-UP)
+      (is (insets/over (t/app s)) "and on the way up")
+      (t/press! s sdl/K-UP)
+      (is (= 0 (t/caret s))))))
+
+(deftest up-and-down-cross-sections-in-sections
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" (ref 1) "two"]
+             :sections [{:id 1 :content ["a" (ref 2) "b"]} {:id 2 :content ["x"]}]})
+    (let [down! #(do (t/press! s sdl/K-DOWN) (insets/path (t/app s)))]
+      (is (= [[0] [0 0] [0]] [(down!) (down!) (down!)])
+          "into the outer one, the inner one, and out to the outer one")
+      (is (= 2 (section-caret s)) "on its line below the inner one")
+      (is (= [nil nil] [(down!) (down!)]) "then out of it"))
+    (t/press! s sdl/K-UP)
+    (t/press! s sdl/K-UP)
+    (is (= [0 0] (insets/path (t/app s))) "and back up into the inner one")))
 
 (deftest clicks-on-sections
   (with-session [s :mode :normal]
-    (auk! s {:content ["one" {:type :section :ref 1} "two"] :sections [{:id 1 :content "inside"}]})
+    (auk! s {:content ["one" (ref 1) "two"] :sections [{:id 1 :content ["inside"]}]})
     (let [m 48.0
           [tx ty _ th] (:text (section-place s 0))]
       (t/click! s (+ m tx 2) (+ m ty (quot th 2)))
       (is (= "inside" (in-section s)) "a click in a section puts the caret there")
-      (is (zero? (:caret (:doc (insets/active (t/app s))))))
+      (is (zero? (section-caret s)))
       (t/click! s (+ m 200) (+ m ty (quot th 2)))
-      (is (= 6 (:caret (:doc (insets/active (t/app s))))) "where it is")
+      (is (= 6 (section-caret s)) "where it is")
       (t/click! s (+ m 2) (+ m 2))
       (is (nil? (in-section s)) "and one in the text takes it out")
       (is (zero? (t/caret s))))
-    (testing "folding the section the caret is in takes it out"
+    (testing "folding the section the caret is in leaves it over the section"
       (t/press! s sdl/K-DOWN)
       (let [[x y _ h] (:header (section-place s 0))]
         (t/click! s (+ 48.0 x 10) (+ 48.0 y (quot h 2))))
-      (is (nil? (in-section s)))
-      (is (not (:modified? (t/app s))) "folding changes nothing in the file"))))
+      (is (= [0] (insets/path (t/app s))))
+      (is (insets/over (t/app s)))
+      (is (not (:modified? (t/app s))) "folding changes nothing in the file")
+      (let [[x y _ h] (:header (section-place s 0))]
+        (t/click! s (+ 48.0 x 10) (+ 48.0 y (quot h 2))))
+      (is (= "inside" (in-section s)) "and unfolding it puts the caret back inside")
+      (is (nil? (insets/over (t/app s)))))))
 
-(deftest cmd-k-deletes-the-section-once-asked
+(deftest clicks-on-sections-in-sections
   (with-session [s :mode :normal]
-    (auk! s {:content ["one" {:type :section :ref 1}] :sections [{:id 1 :content "doomed"}]})
-    (t/press! s sdl/K-K cmd)
-    (is (= "The caret is not in a section" (:message (t/app s))))
+    (auk! s {:content ["one" (ref 1)] :sections [{:id 1 :content ["a" (ref 2)]} {:id 2 :content ["x"]}]})
+    (let [m 48.0
+          [ox oy] (:text (section-place s 0))
+          inner (first (:block-places (get-in (t/app s) [:insets 0])))
+          [tx ty _ th] (:text inner)
+          [hx hy _ hh] (:header inner)]
+      (t/click! s (+ m ox tx 2) (+ m oy ty (quot th 2)))
+      (is (= [0 0] (insets/path (t/app s))) "a click in the inner one puts the caret there")
+      (t/click! s (+ m ox hx 10) (+ m oy hy (quot hh 2)))
+      (is (get-in (t/app s) [:insets 0 :insets 0 :collapsed?]) "its header folds it")
+      (is (= [0 0] (insets/path (t/app s))) "and leaves the caret over it")
+      (is (insets/over (t/app s))))))
+
+(deftest cmd-shift-k-deletes-the-section-once-asked
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" (ref 1)] :sections [{:id 1 :content ["doomed"]}]})
+    (t/press! s sdl/K-K (bit-or cmd sdl/KMOD-SHIFT))
+    (is (= "The caret is not in a section or list" (:message (t/app s))))
     (t/press! s sdl/K-DOWN)
-    (t/press! s sdl/K-K cmd)
+    (t/press! s sdl/K-K (bit-or cmd sdl/KMOD-SHIFT))
     (is (= "Delete this section? (y/n)" (get-in (t/app s) [:confirm :prompt])))
     (t/press! s sdl/K-N)
     (is (:confirm (t/app s)) "a key waits for the answer")
     (t/type! s "n")
     (is (= "Cancelled" (:message (t/app s))))
     (is (= 1 (count (sections s))))
-    (t/press! s sdl/K-K cmd)
+    (t/press! s sdl/K-K (bit-or cmd sdl/KMOD-SHIFT))
     (t/press! s sdl/K-ESCAPE)
     (is (= "Cancelled" (:message (t/app s))) "escape answers no")
-    (t/press! s sdl/K-K cmd)
+    (t/press! s sdl/K-K (bit-or cmd sdl/KMOD-SHIFT))
     (t/type! s "y")
     (is (empty? (sections s)))
     (is (nil? (in-section s)) "the caret is back in the text")
     (is (= "Deleted the section" (:message (t/app s))))
     (is (:modified? (t/app s)))))
+
+(deftest cmd-shift-k-in-a-section-in-a-section-deletes-just-that
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" (ref 1)] :sections [{:id 1 :content ["a" (ref 2)]} {:id 2 :content ["x"]}]})
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-K (bit-or cmd sdl/KMOD-SHIFT))
+    (t/type! s "y")
+    (is (= [[0 "a"]] (sections s)))
+    (is (= [0] (insets/path (t/app s))) "the caret is back in the outer one")))
 
 (deftest a-section-has-its-own-undo
   (with-session [s :mode :normal]
@@ -1478,7 +1580,11 @@
     (t/press! s sdl/K-ESCAPE)
     (t/type! s "u")
     (is (= "" (in-section s)) "undo in a section undoes its typing")
-    (is (= "one more" (t/text s)) "and not the text's")))
+    (is (= "one more\n" (t/text s)) "and not the text's")
+    (t/press! s sdl/K-UP)
+    (t/type! s "u")
+    (is (= "one more" (t/text s)) "the new line after it is the text's to undo")
+    (is (= [[0 ""]] (sections s)) "which leaves the section")))
 
 (deftest auk-help-comes-first-in-auk-mode
   (with-session [s :mode :normal]
@@ -1489,7 +1595,7 @@
 
 (deftest insets-need-a-mode-to-write-them
   (with-session [s :mode :normal]
-    (auk! s {:content ["one" {:type :section :ref 1}] :sections [{:id 1 :content "x"}]})
+    (auk! s {:content ["one" (ref 1)] :sections [{:id 1 :content ["x"]}]})
     (t/command! s "mode text")
     (t/command! s "save")
     (t/send! s {:type :save-chosen :path "/notes/n.txt"})
@@ -1500,17 +1606,17 @@
 (deftest reverting-reads-the-sections-again
   (with-session [s :mode :normal]
     (swap! s assoc-in [:files "/notes/n.auk"]
-           (pr-str {:content ["one" {:type :section :ref 1}] :sections [{:id 1 :content "kept"}]}))
+           (pr-str {:content ["one" (ref 1)] :sections [{:id 1 :content ["kept" (ref 2)]} {:id 2 :content ["in"]}]}))
     (auk! s {:content ["one"]})
     (t/press! s sdl/K-S cmd)
     (t/command! s "revert")
-    (is (= [[0 "kept"]] (sections s)))
+    (is (= [[0 "kept" [[0 "in"]]]] (sections s)))
     (is (nil? (in-section s)))
     (is (not (:modified? (t/app s))))))
 
 (deftest each-buffer-keeps-its-sections
   (with-session [s :mode :normal]
-    (auk! s {:content ["one" {:type :section :ref 1}] :sections [{:id 1 :content "mine"}]})
+    (auk! s {:content ["one" (ref 1)] :sections [{:id 1 :content ["mine"]}]})
     (t/press! s sdl/K-DOWN)
     (open! s "/notes/other.txt" "plain")
     (is (empty? (sections s)))
@@ -1530,6 +1636,379 @@
     (t/press! s sdl/K-LEFT)
     (t/press! s (int \j) cmd)
     (is (nil? (:message (t/app s))) "and only with them all")))
+
+;; ---------------------------------------------------------------- folding, renaming, lists
+
+(def ^:private ctrl sdl/KMOD-CTRL)
+
+(defn- key! [s c mod] (t/press! s (int c) mod))
+
+(deftest space-folds-and-unfolds-the-section
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" (ref 1) "two"] :sections [{:id 1 :content ["a" "b"]}]})
+    (t/type! s " ")
+    (is (nil? (insets/path (t/app s))) "outside a section, space does nothing")
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-DOWN)
+    (t/type! s " ")
+    (is (get-in (t/app s) [:insets 0 :collapsed?]) "inside one, space folds it")
+    (is (insets/over (t/app s)) "leaving the caret over it")
+    (t/type! s " ")
+    (is (not (get-in (t/app s) [:insets 0 :collapsed?])) "over it, space unfolds it")
+    (is (= "a\nb" (in-section s)) "and puts the caret inside")
+    (is (= 2 (section-caret s)) "where it was")))
+
+(deftest over-a-folded-section-the-text-is-left-alone
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" (ref 1) "two"] :sections [{:id 1 :content ["a"]}]})
+    (t/press! s sdl/K-DOWN)
+    (t/type! s " ")
+    (t/type! s "x")
+    (t/type! s "i")
+    (t/type! s "zz")
+    (is (= :normal (:mode (t/app s))))
+    (is (= "one\ntwo" (t/text s)))
+    (is (= [{:after 0 :text "a" :insets []}] (insets/snapshot (t/app s))))
+    (t/type! s ":")
+    (is (= :command (:mode (t/app s))) "but the command line opens")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-K (bit-or cmd sdl/KMOD-SHIFT))
+    (t/type! s "y")
+    (is (empty? (sections s)) "and cmd+shift+k deletes it")))
+
+(deftest cmd-r-renames-the-section
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" (ref 1)] :sections [{:id 1 :content ["a"]}]})
+    (t/press! s sdl/K-DOWN)
+    (key! s \r cmd)
+    (is (= [0] (:renaming (t/app s))))
+    (t/type! s "Habitatx")
+    (t/press! s sdl/K-BACKSPACE)
+    (is (= "Habitat" (insets/renaming (t/app s))))
+    (is (= "a" (str (get-in (t/app s) [:insets 0 :doc :text]))) "not typed into the text")
+    (t/press! s sdl/K-RETURN)
+    (is (nil? (:renaming (t/app s))))
+    (is (= "Habitat" (get-in (t/app s) [:insets 0 :title])))
+    (is (= "a" (in-section s)) "the text is as it was")
+    (is (some #(= "Habitat" (get-in % [:node :text])) (:placed (section-place s 0))) "the header says it")
+    (t/command! s "w")
+    (is (str/includes? (get-in @s [:files "/notes/n.auk"]) "{:id 1 :title \"Habitat\" :content [\"a\"]}"))
+    (testing "up or down keep it too, and escape gives it up"
+      (key! s \r cmd)
+      (t/type! s "s")
+      (t/press! s sdl/K-UP)
+      (is (= "Habitats" (get-in (t/app s) [:insets 0 :title])))
+      (key! s \r cmd)
+      (t/type! s "!!")
+      (t/press! s sdl/K-ESCAPE)
+      (is (= "Habitats" (get-in (t/app s) [:insets 0 :title]))))
+    (testing "over a folded one, and to nothing, which takes the title away"
+      (t/type! s " ")
+      (key! s \r cmd)
+      (dotimes [_ 8] (t/press! s sdl/K-BACKSPACE))
+      (t/press! s sdl/K-DOWN)
+      (is (nil? (get-in (t/app s) [:insets 0 :title]))))
+    (testing "not outside a section"
+      (t/press! s sdl/K-UP)
+      (key! s \r cmd)
+      (is (nil? (:renaming (t/app s))))
+      (is (= "The caret is not in a section" (:message (t/app s)))))))
+
+(deftest l-starts-a-list
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" "two"]})
+    (t/type! s "l")
+    (is (= [[0 ""]] (sections s)) "below the line")
+    (is (= :list (:kind (insets/innermost (t/app s)))))
+    (is (= "one\n\ntwo" (t/text s)) "with a new line after it")
+    (is (= :normal (:mode (t/app s))) "still in normal mode")
+    (t/type! s "i")
+    (t/type! s "eggs")
+    (t/press! s sdl/K-RETURN)
+    (t/type! s "leaves")
+    (t/press! s sdl/K-ESCAPE)
+    (is (= "eggs\nleaves" (in-section s)) "each line an item")
+    (t/command! s "w")
+    (is (= (str "{:content\n [\"one\"\n  {:type :list :content [{:text \"eggs\"} {:text \"leaves\"}]}\n"
+                "  \"\"\n  \"two\"]}\n")
+           (get-in @s [:files "/notes/n.auk"])))
+    (testing "reads back as it was"
+      (open! s "/notes/copy.auk" (get-in @s [:files "/notes/n.auk"]))
+      (is (= [{:after 0 :text "eggs\nleaves" :insets [] :kind :list}] (insets/snapshot (t/app s)))))))
+
+(deftest cmd-l-inserts-a-list-in-insert-mode
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one"]})
+    (t/type! s "A")
+    (key! s \l cmd)
+    (is (= :list (:kind (insets/innermost (t/app s)))))
+    (is (= :insert (:mode (t/app s))) "still in insert mode")
+    (t/type! s "first")
+    (is (= "first" (in-section s)))
+    (t/press! s sdl/K-ESCAPE)
+    (key! s \l cmd)
+    (is (= 1 (count (sections s))) "not in normal mode")))
+
+(deftest checklists-tick-and-keep-their-ticks
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one"]})
+    (key! s \l ctrl)
+    (is (= :checklist (:kind (insets/innermost (t/app s)))))
+    (t/type! s "i")
+    (t/type! s "eggs\nleaves")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-UP)
+    (t/type! s "t")
+    (is (= [true false] (:checked (first (insets/snapshot (t/app s))))) "t ticks the item the caret is in")
+    (t/type! s "t")
+    (is (= [false false] (:checked (first (insets/snapshot (t/app s))))) "and unticks it")
+    (t/type! s "t")
+    (testing "ticks follow their items as the list is edited"
+      (t/type! s "O")
+      (t/type! s "nest")
+      (t/press! s sdl/K-ESCAPE)
+      (is (= "nest\neggs\nleaves" (in-section s)))
+      (is (= [false true false] (:checked (first (insets/snapshot (t/app s))))))
+      (t/press! s sdl/K-DOWN)
+      (t/type! s "A")
+      (t/press! s sdl/K-RETURN)
+      (t/type! s "bark")
+      (t/press! s sdl/K-ESCAPE)
+      (is (= [false true false false] (:checked (first (insets/snapshot (t/app s)))))))
+    (t/command! s "w")
+    (is (str/includes? (get-in @s [:files "/notes/n.auk"])
+                       (str "{:type :checklist :content [{:text \"nest\" :checked? false} "
+                            "{:text \"eggs\" :checked? true} {:text \"bark\" :checked? false} "
+                            "{:text \"leaves\" :checked? false}]}")))
+    (open! s "/notes/copy.auk" (get-in @s [:files "/notes/n.auk"]))
+    (is (= [false true false false] (:checked (first (insets/snapshot (t/app s))))) "and read back")
+    (testing "t outside a checklist"
+      (t/type! s "t")
+      (is (= "The caret is not in a checklist" (:message (t/app s)))))))
+
+(deftest cmd-ctrl-l-inserts-a-checklist-in-insert-mode
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one"]})
+    (t/type! s "A")
+    (key! s \l (bit-or cmd ctrl))
+    (is (= :checklist (:kind (insets/innermost (t/app s)))))
+    (is (= :insert (:mode (t/app s))))))
+
+(deftest lists-hold-no-sections
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" (ref 1)] :sections [{:id 1 :content ["a"]}]})
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "l")
+    (is (= [0 0] (insets/path (t/app s))) "a list in a section")
+    (t/press! s sdl/K-S cmd)
+    (is (= [[0 "a\n\n" [[0 "" ] [0 ""]]]] (sections s)) "cmd+s in it adds a section after it, in the section")
+    (is (= [:list :section] (map #(:kind % :section) (:insets (first (insets/snapshot (t/app s))))))
+        "in that order")
+    (t/press! s sdl/K-UP)
+    (is (= :list (:kind (insets/innermost (t/app s)))))
+    (t/type! s " ")
+    (is (insets/over (t/app s)) "space in a list folds the section it is in")
+    (is (= [0] (insets/path (t/app s))))))
+
+;; ---------------------------------------------------------------- k, nested lists, tab, return
+
+(deftest k-deletes-forwards-in-normal-mode
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one two" (ref 1) "three"] :sections [{:id 1 :content ["in"]}]})
+    (t/type! s "k")
+    (is (= "ne two\nthree" (t/text s)) "the character after the caret")
+    (is (= :normal (:mode (t/app s))))
+    (t/type! s "w")
+    (t/type! s "k")
+    (is (= " two\nthree" (t/text s)) "or the selection")
+    (t/press! s sdl/K-END)
+    (t/type! s "k")
+    (is (= " two\nthree" (t/text s)) "but not past the end of a line a section is below")
+    (is (= [[0 "in"]] (sections s)))
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "0")
+    (t/type! s "k")
+    (is (= "n" (in-section s)) "in a section, its own text")
+    (t/type! s "u")
+    (is (= "in" (in-section s)) "and undo puts it back")
+    (testing "at the end of the text, nothing"
+      (t/press! s sdl/K-DOWN)
+      (t/press! s sdl/K-END)
+      (t/type! s "k")
+      (is (= " two\nthree" (t/text s))))))
+
+(deftest a-list-key-in-a-list-starts-a-sublist
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :list :content [{:text "a"} {:text "b"}]}]})
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "l")
+    (is (= 2 (count (insets/path (t/app s)))) "in the list")
+    (is (= [[0 "a\nb" [[0 ""]]]] (sections s)) "below the item the caret is in, with no new item")
+    (t/type! s "i")
+    (t/type! s "a1")
+    (t/press! s sdl/K-ESCAPE)
+    (key! s \l ctrl)
+    (is (= [[0 "a\nb" [[0 "a1" [[0 ""]]]]]] (sections s)) "to any depth, of either kind")
+    (t/command! s "w")
+    (is (str/includes? (get-in @s [:files "/notes/n.auk"])
+                       (str "{:type :list :content [{:text \"a\"} {:type :list :content [{:text \"a1\"} "
+                            "{:type :checklist :content [{:text \"\" :checked? false}]}]} {:text \"b\"}]}")))
+    (open! s "/notes/copy.auk" (get-in @s [:files "/notes/n.auk"]))
+    (is (= [[0 "a\nb" [[0 "a1" [[0 ""]]]]]] (sections s)) "and reads back")))
+
+(defn- list! [s items] (auk! s {:content ["one" {:type :list :content items}]}))
+
+(deftest tab-cycles-a-list-items-indent
+  (with-session [s :mode :normal]
+    (list! s [{:text "a"} {:text "b"} {:text "c"}])
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-TAB)
+    (is (= [[0 "a\nc" [[0 "b"]]]] (sections s)) "into a sublist of the item before it")
+    (is (= "b" (in-section s)) "the caret with it")
+    (t/press! s sdl/K-TAB)
+    (is (= [[0 "a\nb\nc"]] (sections s)) "with no list above, back where it was")
+    (is (= "a\nb\nc" (in-section s)))
+    (is (= 2 (section-caret s)))
+    (t/press! s sdl/K-TAB)
+    (is (= [[0 "a\nc" [[0 "b"]]]] (sections s)) "and round again")
+    (testing "the first item has no item to go under"
+      (t/press! s sdl/K-TAB)
+      (t/press! s sdl/K-UP)
+      (t/press! s sdl/K-TAB)
+      (is (= [[0 "a\nb\nc"]] (sections s))))))
+
+(deftest tab-takes-a-sublist-item-out-and-back
+  (with-session [s :mode :normal]
+    (list! s [{:text "a"} {:type :list :content [{:text "x"} {:text "y"} {:text "z"}]} {:text "b"}])
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-DOWN)
+    (is (= "x\ny\nz" (in-section s)))
+    (t/type! s "A")
+    (t/press! s sdl/K-TAB)
+    (is (= [[0 "a\nb" [[0 "x\nz" [[0 "y"]]]]]] (sections s)) "in, under x")
+    (t/press! s sdl/K-TAB)
+    (is (= [[0 "a\ny\nb" [[0 "x"] [1 "z"]]]] (sections s))
+        "out, to the list holding its list, the items after it its sublist")
+    (is (= "a\ny\nb" (in-section s)))
+    (is (= 3 (section-caret s)) "the caret where it was along it")
+    (t/press! s sdl/K-TAB)
+    (is (= [[0 "a\nb" [[0 "x\ny\nz"]]]] (sections s)) "and back")
+    (is (= :insert (:mode (t/app s))) "in insert mode too")))
+
+(deftest tab-on-a-sublists-first-item-takes-it-out
+  ;; it can't go in, having no item before it, so it goes out; its list,
+  ;; left with nothing, goes, which once left the caret pointing at it
+  (with-session [s :mode :normal]
+    (list! s [{:text "a"} {:type :list :content [{:text "x"} {:text "y"}]} {:text "b"}])
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-DOWN)
+    (is (= "x\ny" (in-section s)))
+    (t/press! s sdl/K-TAB)
+    (is (= [[0 "a\nx\nb" [[1 "y"]]]] (sections s)) "out, the item after it its sublist")
+    (is (= "a\nx\nb" (in-section s)))
+    (is (= 2 (section-caret s)))
+    (t/render! s)
+    (t/press! s sdl/K-TAB)
+    (is (= [[0 "a\nb" [[0 "x\ny"]]]] (sections s)) "and back")
+    (t/render! s)))
+
+(deftest a-click-on-a-box-ticks-it
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :checklist :content [{:text "a"} {:text "b"}]}]})
+    (let [m 48.0
+          lh (layout/line-height (:layout (t/app s)))
+          [tx ty] (:text (section-place s 0))]
+      (t/click! s (+ m tx -10) (+ m ty lh (quot lh 2)))
+      (is (= [false true] (:checked (first (insets/snapshot (t/app s))))) "the item beside it")
+      (is (nil? (insets/path (t/app s))) "leaving the caret where it was")
+      (is (:modified? (t/app s)))
+      (t/click! s (+ m tx -10) (+ m ty lh (quot lh 2)))
+      (is (= [false false] (:checked (first (insets/snapshot (t/app s)))))))))
+
+(deftest return-twice-leaves-the-list
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :list :content [{:text "a"}]} "two"]})
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "A")
+    (t/press! s sdl/K-RETURN)
+    (is (= "a\n" (in-section s)) "the first makes an item")
+    (t/press! s sdl/K-RETURN)
+    (is (nil? (insets/path (t/app s))) "the second leaves the list")
+    (is (= [[0 "a"]] (sections s)) "taking the empty item away")
+    (is (= "one\n\ntwo" (t/text s)) "for a new line after it")
+    (is (= 4 (t/caret s)))
+    (is (= :insert (:mode (t/app s))))
+    (testing "from a sublist, one level"
+      (t/press! s sdl/K-ESCAPE)
+      (open! s "/notes/sub.auk" (pr-str {:content ["one" {:type :list :content [{:text "a"} {:type :list :content [{:text "x"}]}]}]}))
+      (t/press! s sdl/K-DOWN)
+      (t/press! s sdl/K-DOWN)
+      (t/type! s "A")
+      (t/press! s sdl/K-RETURN)
+      (t/press! s sdl/K-RETURN)
+      (is (= 1 (count (insets/path (t/app s)))) "out to the list holding it")
+      (is (= [[0 "a\n" [[0 "x"]]]] (sections s)) "on a new item after it"))
+    (testing "a list of an empty item goes"
+      (t/press! s sdl/K-ESCAPE)
+      (open! s "/notes/e.auk" (pr-str {:content ["one" {:type :list :content [{:text ""}]}]}))
+      (t/press! s sdl/K-DOWN)
+      (t/type! s "i")
+      (t/press! s sdl/K-RETURN)
+      (is (empty? (sections s)))
+      (is (= "one\n" (t/text s))))))
+
+(deftest shift-return-leaves-every-list
+  (with-session [s :mode :normal]
+    (list! s [{:text "a"} {:type :list :content [{:text "x"}]}])
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "A")
+    (t/press! s sdl/K-RETURN sdl/KMOD-SHIFT)
+    (is (nil? (insets/path (t/app s))))
+    (is (= [[0 "a" [[0 "x"]]]] (sections s)) "an item with text stays")
+    (is (= "one\n" (t/text s)) "and a new line goes after the outermost")
+    (is (= 4 (t/caret s)))))
+
+(deftest cmd-k-deletes-the-line
+  (with-session [s :mode :normal]
+    (t/type! s "i")
+    (t/type! s "one\ntwo\nthree")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-UP)
+    (t/press! s sdl/K-K cmd)
+    (is (= "one\nthree" (t/text s)) "the line the caret is in, and its newline")
+    (is (= 4 (t/caret s)) "the caret at the start of the next")
+    (t/press! s sdl/K-K cmd)
+    (is (= "one" (t/text s)))
+    (is (= 0 (t/caret s)) "or, at the end, of the one before")
+    (t/press! s sdl/K-K cmd)
+    (is (= "" (t/text s)) "a lone line is emptied")
+    (t/type! s "u")
+    (is (= "one" (t/text s)) "undo puts it back, a line at a time")
+    (testing "only in normal mode"
+      (t/type! s "i")
+      (t/press! s sdl/K-K cmd)
+      (is (= "one" (t/text s))))))
+
+(deftest cmd-k-leaves-the-sections-below-the-line
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" (ref 1) "two" "three"] :sections [{:id 1 :content ["a" "b"]}]})
+    (t/press! s sdl/K-K cmd)
+    (is (= "two\nthree" (t/text s)))
+    (is (= [[-1 "a\nb"]] (sections s)) "a section below the first line goes above the new first")
+    (t/press! s sdl/K-UP)
+    (is (= "a\nb" (in-section s)))
+    (t/press! s sdl/K-K cmd)
+    (is (= "a" (in-section s)) "in a section, its line")
+    (is (= [[-1 "a"]] (sections s)) "and the section stays")
+    (testing "and in a list, its item"
+      (open! s "/notes/l.auk" (pr-str {:content ["one" {:type :checklist :content [{:text "x" :checked? true}
+                                                                                 {:text "y"}]}]}))
+      (t/press! s sdl/K-DOWN)
+      (t/press! s sdl/K-K cmd)
+      (is (= [{:after 0 :text "y" :insets [] :kind :checklist :checked [false]}] (insets/snapshot (t/app s)))))))
 
 ;; ---------------------------------------------------------------- boxes
 

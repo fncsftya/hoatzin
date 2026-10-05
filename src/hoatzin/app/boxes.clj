@@ -78,6 +78,18 @@
                              (:inset b) (merge (insets/parts placed))))))
         out))))
 
+(defn place-all
+  "`level`, the app or an inset's (see hoatzin.app.insets), with its
+  blocks placed, and those of every unfolded inset in it, all the way
+  down: each inset's first, as how tall it is depends on them."
+  [level]
+  (let [level (update level :insets update-vals
+                      (fn [i]
+                        (if (insets/folded? i)
+                          i
+                          (insets/placed i (place-all (insets/level-of level i))))))]
+    (assoc level :block-places (place-blocks level))))
+
 (defn place-floats
   "The floats placed in the window, in render pixels: in a box as big as
   it, which lays out those in flow down its left edge. The open window, if

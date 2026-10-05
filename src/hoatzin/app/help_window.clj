@@ -20,6 +20,8 @@
      ["s" "select the sentence; again, extend to the next"]
      ["c" "copy the selection"]
      ["x" "cut the selection"]
+     ["k" "delete forwards, or the selection"]
+     ["cmd+k" "delete the line"]
      ["p" "paste at the caret"]
      ["u" "undo"]
      ["r" "redo (after undoing)"]

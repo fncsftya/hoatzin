@@ -301,8 +301,8 @@
     (t/send! s {:type :opened :path "/notes/hoatzin.auk"
                 :text (pr-str {:content [{:type :section :ref 1} "Between them." {:type :section :ref 2}
                                          "After them."]
-                               :sections [{:id 1 :content "Folded away\nand more"}
-                                          {:id 2 :content (str/join "\n" (map #(str "Line " %) (range 1 16)))}]})})
+                               :sections [{:id 1 :content ["Folded away" "and more"]}
+                                          {:id 2 :content (mapv #(str "Line " %) (range 1 16))}]})})
     (let [header (fn [id] (:header (some #(when (= id (:inset %)) %) (:block-places (t/app s)))))
           m 48
           click-header! (fn [id] (let [[x y _ h] (header id)]
@@ -314,15 +314,30 @@
     (t/matches-golden? "auk-sections-folded-and-scrolled" (t/render! s))))
 
 (deftest ^:integration auk-delete-asks
-  ;; cmd+k in a section asks in the status bar
+  ;; cmd+shift+k in a section asks in the status bar
   (with-session [s :mode :normal]
     (t/send! s {:type :opened :path "/notes/hoatzin.auk"
                 :text (pr-str {:content [hoatzin-text {:type :section :ref 1}]
-                               :sections [{:id 1 :content "Gone soon."}]})})
+                               :sections [{:id 1 :content ["Gone soon."]}]})})
     (t/press! s sdl/K-DOWN cmd)
     (t/press! s sdl/K-DOWN)
-    (t/press! s sdl/K-K cmd)
+    (t/press! s sdl/K-K (bit-or cmd sdl/KMOD-SHIFT))
     (t/matches-golden? "auk-delete-asks" (t/render! s))))
+
+(deftest ^:integration auk-nested-sections
+  ;; a section in a section, the caret in it, and the new line after each
+  (with-session [s :mode :normal :height 420]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk"
+                :text (pr-str {:content ["Hoatzins."]})})
+    (t/press! s sdl/K-S cmd)
+    (t/type! s "i")
+    (t/type! s "Chicks have claws on their wings.")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-S cmd)
+    (t/type! s "i")
+    (t/type! s "They lose them as adults.")
+    (t/press! s sdl/K-ESCAPE)
+    (t/matches-golden? "auk-nested-sections" (t/render! s))))
 
 (deftest ^:integration auk-help
   ;; in auk mode, its keys come first in the help
@@ -330,3 +345,47 @@
     (t/send! s {:type :opened :path "/notes/hoatzin.auk" :text "{:content []}"})
     (t/type! s "?")
     (t/matches-golden? "auk-help" (t/render! s))))
+
+(deftest ^:integration auk-over-and-renaming
+  ;; the caret over a folded section, its header highlighted; then the
+  ;; other being renamed, the caret in its header
+  (with-session [s :mode :normal :height 360]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk"
+                :text (pr-str {:content ["Hoatzins." {:type :section :ref 1} {:type :section :ref 2}]
+                               :sections [{:id 1 :title "Habitat" :content ["Swamps and mangroves."]}
+                                          {:id 2 :content ["Leaves, mostly."]}]})})
+    (t/press! s sdl/K-DOWN)
+    (t/type! s " ")
+    (t/matches-golden? "auk-over-folded" (t/render! s))
+    (t/press! s sdl/K-DOWN)
+    (t/press! s (int \r) cmd)
+    (t/type! s "Diet")
+    (t/matches-golden? "auk-renaming" (t/render! s))))
+
+(deftest ^:integration auk-lists
+  ;; a list and a checklist, one item ticked, an item wrapping
+  (with-session [s :mode :normal :height 400]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk"
+                :text (pr-str {:content ["Eats:"
+                                         {:type :list :content [{:text "leaves"}
+                                                                {:text (str "flowers and fruit, fermented in "
+                                                                            "its crop, which makes it smell")}]}
+                                         "To see:"
+                                         {:type :checklist :content [{:text "a chick" :checked? true}
+                                                                     {:text "its claws" :checked? false}]}]})})
+    (t/matches-golden? "auk-lists" (t/render! s))))
+
+(deftest ^:integration auk-nested-lists
+  ;; a list with a sublist, holding a checklist, each indented further
+  (with-session [s :mode :normal :height 360]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk"
+                :text (pr-str {:content ["Eats:"
+                                         {:type :list
+                                          :content [{:text "leaves"}
+                                                    {:type :list
+                                                     :content [{:text "young ones"}
+                                                               {:type :checklist
+                                                                :content [{:text "seen" :checked? true}
+                                                                          {:text "photographed"}]}]}
+                                                    {:text "flowers"}]}]})})
+    (t/matches-golden? "auk-nested-lists" (t/render! s))))

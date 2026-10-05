@@ -54,8 +54,7 @@
   (let [t    (get-in app [:doc :text])
         file (file-name path)
         mode (or (:major-mode app) (modes/for-path app path))
-        doc  {:text (str t)
-              :insets (mapv (fn [[after s]] {:after after :text s}) (insets/snapshot app))}
+        doc  {:text (str t) :insets (insets/snapshot app)}
         {s :text error :error} (modes/write-text app mode doc)
         error (or error ((:write-file-fn app) path s))]
     (assoc (if error

@@ -15,7 +15,14 @@
                                        normal mode commands, over the
                                        editor's own: by the text typed, or
                                        by the key and its modifiers (ctrl,
-                                       alt, shift, cmd), as in \"cmd+s\"
+                                       alt, shift, cmd), as in \"cmd+s\";
+                                       a named key, as \"tab\" or
+                                       \"return\", needs none. One that
+                                       answers nil leaves the key to the
+                                       editor
+     :insert     {\"cmd+l\" (fn [app now] app)}
+                                       insert mode commands, by the key and
+                                       its modifiers, as :normal names them
      :commands   {\"name\" (fn [app now force? arg] app)}
                                        command line commands, over the
                                        editor's own: `force?` is a trailing
@@ -26,9 +33,12 @@
      :inset-title \"Section\"           what an inset's header says}
 
   every key but :name optional. A doc is the text with its insets (see
-  hoatzin.app.insets): {:text s :insets [{:after k :text s} ...]}, the
-  insets in order down the text, each below paragraph :after (-1: above
-  the first); :read may answer just the text, a string. :read and :write
+  hoatzin.app.insets): {:text s :insets [{:after k :text s :insets [...]}
+  ...]}, the insets in order down the text, each below paragraph :after
+  (-1: above the first) and each with its own insets, as a doc has them,
+  and with its :kind (:section, :list or :checklist), :title and, for a
+  checklist, :checked, a tick for each paragraph, if it has them. :read
+  may answer just the text, a string, and leave out an inset's :insets. :read and :write
   may throw to say the file can't be: what they throw says why. A mode
   without them reads and writes the text as it is, and can't write
   insets.
@@ -65,20 +75,58 @@
 (declare guarded)
 
 (defn- add-inset
-  "The app with a new inset holding `s` (\"\" if not given), below the
-  paragraph or inset the caret is in, and the caret in it."
-  ([app now] (insets/add app now))
-  ([app now s] (insets/add app now s)))
+  "The app with a new inset of `spec`, {:text s :kind k :title s :checked
+  [...]}, or of string `spec` (\"\" if not given), below the paragraph
+  the caret is in, in the innermost text it is in that can hold one (the
+  buffer's or a section's), with a new line after it, and the caret in
+  it."
+  ([app now] (insets/add app now ""))
+  ([app now spec] (insets/add app now spec)))
+
+(defn- inset-info
+  "What the inset at `path` is: {:kind :title :folded?}, or nil."
+  [app path]
+  (when-let [i (insets/inset-at app path)]
+    {:kind (insets/kind i) :title (:title i) :folded? (boolean (:collapsed? i))}))
+
+(defn- toggle-inset
+  "Fold the section at `path`, or unfold it; folding the one the caret is
+  in leaves the caret over it, and unfolding the one it is over puts the
+  caret inside."
+  [app now path]
+  (insets/toggle-at app now path))
+
+(defn- toggle-check
+  "Tick, or untick, the item the caret is in of the checklist at `path`."
+  [app now path]
+  (insets/toggle-check app now path))
+
+(defn- rename-inset
+  "Begin renaming the section at `path`, in its header."
+  [app path]
+  (insets/start-rename app path))
+
+(defn- cycle-indent
+  "Indent the list item the caret is in, then take it out, then put it
+  back, as tab does again and again; nil if it isn't in a list."
+  [app now]
+  (insets/cycle-indent app now))
+
+(defn- list-return
+  "Leave the list the caret is in (`all?`: every list) for a new line
+  after it, if it is on the empty last item (`all?`: on any); else nil."
+  [app now all?]
+  (insets/list-return app now all?))
 
 (defn- remove-inset
-  "The app without inset `id`."
-  [app now id]
-  (insets/remove-inset app now id))
+  "The app without the inset at `path`, as `current-inset` gives it."
+  [app now path]
+  (insets/remove-inset app now path))
 
 (defn- current-inset
-  "The id of the inset the caret is in, or nil."
+  "The inset the caret is in, as the path of ids down to it, or nil."
   [app]
-  (:inset app))
+  (insets/path app))
 
 (defn- ask
   "Ask `prompt` in the status bar: answered yes, the app becomes
@@ -93,6 +141,12 @@
    'add-inset     (sci/copy-var add-inset api-ns)
    'remove-inset  (sci/copy-var remove-inset api-ns)
    'current-inset (sci/copy-var current-inset api-ns)
+   'inset-info    (sci/copy-var inset-info api-ns)
+   'toggle-inset  (sci/copy-var toggle-inset api-ns)
+   'toggle-check  (sci/copy-var toggle-check api-ns)
+   'rename-inset  (sci/copy-var rename-inset api-ns)
+   'cycle-indent  (sci/copy-var cycle-indent api-ns)
+   'list-return   (sci/copy-var list-return api-ns)
    'confirm       (sci/copy-var ask api-ns)})
 
 (defn- context [] (sci/init {:namespaces {'hoatzin.mode api}}))
@@ -140,8 +194,28 @@
     (some (fn [[name m]] (when (some #{ext} (:extensions m)) name))
           (sort-by key (:modes app)))))
 
-(defn- inset-spec? [{:keys [after text]}]
-  (and (integer? after) (>= after -1) (string? text)))
+(defn- inset-spec?
+  "Whether `i` is an inset of a doc: below a paragraph (or -1), of a kind
+  there is, and a doc itself."
+  [i]
+  (and (integer? (:after i)) (>= (:after i) -1)
+       (contains? #{nil :section :list :checklist} (:kind i))
+       ((some-fn nil? string?) (:title i))
+       ((some-fn nil? #(every? boolean? %)) (:checked i))
+       (map? i) (string? (:text i))
+       (every? inset-spec? (:insets i))))
+
+(defn- doc?
+  "Whether `d` is a doc: its insets, if any, insets of a doc."
+  [d]
+  (and (map? d) (string? (:text d)) (every? inset-spec? (:insets d))))
+
+(defn- normalized
+  "Doc `d` with its newlines, and its insets', normalized."
+  [d]
+  (-> d
+      (update :text text/normalize-newlines)
+      (assoc :insets (mapv normalized (:insets d)))))
 
 (defn- as-doc
   "What a mode's :read answered as a doc, its newlines normalized, or nil
@@ -149,9 +223,7 @@
   [r]
   (cond
     (string? r) {:text (text/normalize-newlines r) :insets []}
-    (and (map? r) (string? (:text r)) (every? inset-spec? (:insets r)))
-    {:text (text/normalize-newlines (:text r))
-     :insets (mapv #(update % :text text/normalize-newlines) (:insets r))}))
+    (doc? r)    (normalized r)))
 
 (defn read-text
   "File contents `s` as the doc of mode `name`'s buffer, {:text t :insets
@@ -175,14 +247,14 @@
       {:text (:text doc)})))
 
 (defn- guarded
-  "Mode function `f`, which takes the app and answers it: a mode's
-  mistake, thrown or answering something else, leaves the app as it was
-  and says what it was."
+  "Mode function `f`, which takes the app and answers it, or nil to leave
+  it to the editor: a mode's mistake, thrown or answering something else,
+  leaves the app as it was and says what it was."
   [f]
   (fn [app & args]
     (let [mode (:major-mode app)]
       (try (let [app' (apply f app args)]
-             (if (map? app')
+             (if (or (nil? app') (map? app'))
                app'
                (message app (str mode " mode answered no app"))))
            (catch Exception e
@@ -205,27 +277,43 @@
 
 (defn- chord
   "Key `key` with modifiers `mod` named as a binding names it, as
-  \"cmd+s\"; nil without a modifier, or for a key with no name."
+  \"cmd+s\" or \"tab\"; nil for a key with no name, or a character's
+  without a modifier, which is typed text."
   [key mod]
   (let [mods (keep (fn [[n m]] (when (pos? (bit-and mod m)) n)) modifiers)
-        name (or (key-names key) (when (< 0x20 key 0x7f) (str (char key))))]
-    (when (and name (seq mods)) (str/join "+" (concat mods [name])))))
+        named (key-names key)
+        name (or named (when (< 0x20 key 0x7f) (str (char key))))]
+    (when (and name (or named (seq mods))) (str/join "+" (concat mods [name])))))
 
 (defn- canonical
-  "Binding `s` with its modifiers in order, if it names a key with any."
+  "Binding `s` with its modifiers in order, if it names a key: with
+  modifiers, or one of `key-names`."
   [s]
   (let [parts (str/split s #"\+")
         mods  (set (butlast parts))
         known (map first modifiers)]
-    (when (and (> (count parts) 1) (every? (set known) mods))
+    (when (and (every? (set known) mods)
+               (or (> (count parts) 1) (contains? (set (vals key-names)) s)))
       (str/join "+" (concat (filter mods known) [(last parts)])))))
+
+(defn- key-command
+  "The command bound in `bindings` to key `key` with modifiers `mod`, or
+  nil."
+  [bindings key mod]
+  (when-let [c (chord key mod)]
+    (some (fn [[k f]] (when (= c (canonical k)) (guarded f))) bindings)))
 
 (defn normal-key
   "The current buffer's mode's normal mode command for key `key` with
   modifiers `mod`, or nil."
   [app key mod]
-  (when-let [c (chord key mod)]
-    (some (fn [[k f]] (when (= c (canonical k)) (guarded f))) (:normal (current app)))))
+  (key-command (:normal (current app)) key mod))
+
+(defn insert-key
+  "The current buffer's mode's insert mode command for key `key` with
+  modifiers `mod`, or nil."
+  [app key mod]
+  (key-command (:insert (current app)) key mod))
 
 (defn help
   "The current buffer's mode's sections of the help window."

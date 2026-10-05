@@ -74,14 +74,27 @@
   "The view of the inset the caret is in (see hoatzin.app.insets/view),
   else the app."
   [app]
-  (or (some->> (:inset app) (insets/view app)) app))
+  (insets/innermost-view app))
+
+(defn- rename-caret-rect
+  "A bar at the end of the name being typed for a section, or nil if its
+  title isn't shown."
+  [app]
+  (when-let [[x y _ h] (insets/title-rect app (:renaming app))]
+    (let [{:keys [line-height caret-top caret-height]} (get-in app [:ui :metrics])]
+      [(+ x (ui-width app (insets/renaming app)))
+       (+ y (quot (- h line-height) 2) caret-top)
+       (max 1 (px app 1))
+       caret-height])))
 
 (defn caret-rect
   "The caret's [x y w h] in render pixels. While a field has the focus, or
-  there is a command line, the caret is there, not in the text; in the
-  text, it is in the inset it is in, if any."
+  there is a command line, or a section is being renamed, the caret is
+  there, not in the text; in the text, it is in the inset it is in, if
+  any."
   [app]
   (or (when (:focus app) (field-caret-rect app))
+      (when (:renaming app) (rename-caret-rect app))
       (if (command? app) (command-caret-rect app) (text-caret-rect (text-with-caret app)))))
 
 ;; ---------------------------------------------------------------- blinking
@@ -100,7 +113,9 @@
   (and (:focused? app)
        (cond (:focus app)   (some? (typing-field app))
              (:window app)  false
+             (:renaming app) (some? (rename-caret-rect app))
              (command? app) true
+             (insets/over app) false
              :else (let [t (text-with-caret app)]
                      (and (nil? (ed/selection (:doc t))) (caret-in-view? t))))))
 
