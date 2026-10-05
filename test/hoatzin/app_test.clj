@@ -831,6 +831,22 @@
     (is (= "\"hoatzin.txt\" 1 lines written" (:message (t/app s))))
     (is (not (:modified? (t/app s))))))
 
+(deftest q-quits-the-editor
+  (with-session [s :mode :normal]
+    (is (not (:quit? (t/app s))))
+    (t/command! s "q")
+    (is (:quit? (t/app s)))))
+
+(deftest q-refuses-to-quit-with-unsaved-changes
+  (with-session [s]
+    (t/type! s "zero")
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "q")
+    (is (not (:quit? (t/app s))))
+    (is (some? (:message (t/app s))))
+    (t/command! s "q!")
+    (is (:quit? (t/app s)))))
+
 (deftest write-without-a-path-asks-where
   (with-session [s]
     (t/type! s "new")

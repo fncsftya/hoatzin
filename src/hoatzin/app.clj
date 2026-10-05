@@ -21,6 +21,8 @@
     :write                          save the file (choosing where, if it
                                     has no path yet)
     :save                           choose where to save the file, and save it
+    :quit                           quit the editor, unless there are unsaved
+                                    changes; `:quit!` quits regardless
 
   Events:
     {:type :text  :text s}          committed text input; in normal mode, a
@@ -596,10 +598,17 @@
   ((:save-dialog-fn app) (:path app))
   app)
 
+(defn- quit [app force?]
+  (if (and (:modified? app) (not force?))
+    (assoc app :message "Unsaved changes (add ! to override)")
+    (assoc app :quit? true)))
+
+;; Each command is (fn [app force?]), `force?` being a trailing `!`.
 (def ^:private commands
-  {"open"  (fn [app] ((:open-dialog-fn app)) app)
-   "write" (fn [app] (if-let [path (:path app)] (write-file app path) (save-as app)))
-   "save"  save-as})
+  {"open"  (fn [app _] ((:open-dialog-fn app)) app)
+   "write" (fn [app _] (if-let [path (:path app)] (write-file app path) (save-as app)))
+   "save"  (fn [app _] (save-as app))
+   "quit"  quit})
 
 (defn- command-names
   "The commands `typed` could mean: the one it names, else those it begins."
@@ -611,12 +620,14 @@
 (defn- run-command
   "Run the command line, back in normal mode."
   [app now]
-  (let [command (str/trim (:command app))
+  (let [typed   (str/trim (:command app))
+        force?  (str/ends-with? typed "!")
+        command (str/trim (cond-> typed force? (subs 0 (dec (count typed)))))
         app     (leave-command app now)
         names   (command-names command)]
     (cond
       (= "" command)     app
-      (= 1 (count names)) ((commands (first names)) app)
+      (= 1 (count names)) ((commands (first names)) app force?)
       (seq names)        (assoc app :message (str "Ambiguous command: " command
                                                   " (" (str/join ", " names) ")"))
       :else              (assoc app :message (str "Not an editor command: " command)))))
