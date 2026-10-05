@@ -1,5 +1,6 @@
 (ns hoatzin.app.draw
-  "Drawing the app, back to front: the text and the blocks in it, clipped
+  "Drawing the app, back to front: the text, what its minor modes show
+  over it (see hoatzin.app.modes) and the blocks in it, clipped
   to the text area; the scroll bar and the status bar; then the floats,
   and an open dropdown list over them."
   (:require [hoatzin.app.caret :refer [caret-visible?]]
@@ -10,6 +11,7 @@
             [hoatzin.app.draw.text :refer [draw-selection! draw-lines! draw-composition!]]
             [hoatzin.app.geometry :refer [line-top origin view-height visible-lines]]
             [hoatzin.app.insets :as insets]
+            [hoatzin.app.modes :as modes]
             [hoatzin.app.state :refer [px insert? command?]]
             [hoatzin.lib.layout :as layout]
             [hoatzin.lib.sdl :as sdl]
@@ -114,6 +116,7 @@
     (draw-selection! app first-k last-k)
     (draw-lines! app first-k last-k)
     (draw-composition! app first-k last-k)
+    (modes/draw! app first-k last-k)
     (draw-blocks! app [0 m w vh])
     (when (and caret? (not (command? app)) (not (:focus app)))
       (draw-text-caret! app [0 m w vh]))

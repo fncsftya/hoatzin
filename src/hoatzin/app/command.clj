@@ -55,6 +55,7 @@
    "revert" (fn [app now _ _] (buffers/revert app now))
    "cd"    (fn [app _ _ _] (buffers/cd app))
    "mode"  (fn [app _ _ arg] (modes/switch app arg))
+   "minor" (fn [app _ _ arg] (modes/toggle-minor app arg))
    "settings" (fn [app _ _ _] (settings-window/open app))})
 
 (defn- commands

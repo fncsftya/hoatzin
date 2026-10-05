@@ -14,8 +14,13 @@
   {:error e}, why it could not), :write-file-fn (write string s to path p,
   returning nil, or why it could not),
   :save-settings-fn (persist the settings, as hoatzin.app.settings has them,
-  returning nil, or why it could not) and :font-families-fn (the names of
-  the fonts installed, as hoatzin.lib.coretext/font-families gives them).
+  returning nil, or why it could not), :font-families-fn (the names of
+  the fonts installed, as hoatzin.lib.coretext/font-families gives them),
+  :load-mode-data-fn (read what minor mode m keeps in file f, its data, as
+  EDN, without waiting for it: it comes back as :mode-data, and it must be
+  read where nothing waits on it) and :save-mode-data-fn (keep data d as
+  minor mode m's file f, as EDN, or with d nil keep no such file,
+  returning nil, or why it could not).
   That is what lets tests drive the editor headlessly and deterministically.
 
   The editor is modal. In :normal mode the text is left alone: keys move the
@@ -63,6 +68,12 @@
     :mode name                      puts the buffer in mode `name`
                                     (\"text\" for none); with no name, says
                                     which it is in, and which there are
+  Each buffer is in minor modes too, any number of them, which may add
+  keys and commands as a mode does, and more; the editor's own is
+  variants (see hoatzin.app.variants), on to begin with.
+    :minor name                     turns minor mode `name` on in the
+                                    buffer, or off; with no name, says
+                                    which there are, and which are on
 
   While a window is open, it takes the input: the text is left alone.
 
@@ -105,6 +116,12 @@
     {:type :save-chosen :error e}   why the dialog failed
     {:type :dir-chosen :path p}     the directory chosen, or
     {:type :dir-chosen :error e}    why the dialog failed
+    {:type :mode-data :mode m :file f :data d}
+                                    minor mode m's file f, read as
+                                    :load-mode-data-fn asked (d nil if there
+                                    is no such file), or
+    {:type :mode-data :mode m :file f :error e}
+                                    why it could not be
     {:type :expose}                 the window needs repainting
     {:type :quit}
 
@@ -131,6 +148,7 @@
             [hoatzin.app.settings :as settings]
             [hoatzin.app.state :as state]
             [hoatzin.app.sync :as sync]
+            [hoatzin.app.variants :as variants]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.lib.textures :as textures]
             [hoatzin.lib.ui :as ui]))
@@ -141,7 +159,8 @@
   "A new, empty editor drawing with `:renderer`. Options (all but :renderer
   optional): :density-fn, :clipboard-fn, :set-clipboard-fn, :open-dialog-fn,
   :save-dialog-fn, :dir-dialog-fn, :read-file-fn, :write-file-fn,
-  :save-settings-fn, :font-families-fn, :now, :dir (the working
+  :save-settings-fn, :font-families-fn, :load-mode-data-fn,
+  :save-mode-data-fn, :now, :dir (the working
   directory, if any), :settings (the defaults unless given), :mode
   (:normal unless given), :mode-sources (modes besides the editor's own,
   as [origin source] pairs: see hoatzin.app.modes/load-sources), :message,
@@ -162,6 +181,8 @@
                          :write-file-fn (fn [_ _] "no file system")
                          :save-settings-fn (fn [_])
                          :font-families-fn (constantly [])
+                         :load-mode-data-fn (fn [_ _])
+                         :save-mode-data-fn (fn [_ _ _])
                          :option-faces (atom {})
                          :settings     settings/defaults
                          :textures     (textures/cache)
@@ -174,7 +195,7 @@
                          :blink-from   now
                          :dirty?       true}
                         (dissoc opts :now :dir :mode-sources)
-                        {:modes   modes
+                        {:modes   (merge {(:name variants/mode) variants/mode} modes)
                          :message (some->> (seq (remove nil? (cons message errors)))
                                            (str/join "; "))})
                  dir))))
@@ -264,9 +285,11 @@
       app)))
 
 (defn handle
-  "The app after `event` (see the ns doc) at time `now` (ms). A question
+  "The app after `event` (see the ns doc) at time `now` (ms). A minor
+  mode's data goes to that mode, whatever else is happening. A question
   in the status bar, if any, takes the event first (see
-  hoatzin.app.confirm), then an open dropdown list, then the field or
+  hoatzin.app.confirm), then the section being renamed, then a minor
+  mode of the buffer's, then an open dropdown list, then the field or
   dropdown with the focus, then the open window, then the text."
   [app event now]
   (let [;; once the editor font's wait is over, sync-view makes it
@@ -285,8 +308,10 @@
         app (dropdown/glide app now)
         app (scroll/glide app now)]
     (or
+      (when (= :mode-data (:type event)) (modes/loaded app event))
       (when (:confirm app) (confirm/on-event app now event))
       (when (:renaming app) (rename/on-event app event))
+      (modes/on-event app now event)
       (when (:list app) (dropdown/on-event app now event))
       (when (:focus app) (fields/on-focus-event app now event))
       (when (:window app) (fields/on-window-event app now event))

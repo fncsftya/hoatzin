@@ -389,3 +389,19 @@
                                                                           {:text "photographed"}]}]}
                                                     {:text "flowers"}]}]})})
     (t/matches-golden? "auk-nested-lists" (t/render! s))))
+
+(deftest ^:integration variants
+  ;; a variant of three wordings, and one of two, each with a dot for each
+  ;; below its start; then a variant being typed, the caret an underline
+  (with-session [s :height 160]
+    (t/send! s {:type :opened :path "/birds/hoatzin.txt" :text "The hoatzin is a stinky bird."})
+    (t/send! s {:type :mode-data :mode "variants" :file "-birds-hoatzin.txt.edn"
+                :data {:variants [{:start 4 :end 11 :options ["hoatzin" "stinkbird" "canje pheasant"]
+                                   :selected 0}
+                                  {:start 17 :end 23 :options ["smelly" "stinky"] :selected 1}]}})
+    (t/press! s sdl/K-ESCAPE)
+    (t/matches-golden? "variants" (t/render! s))
+    (t/press! s sdl/K-RIGHT cmd)
+    (t/type! s "w")
+    (t/type! s "vbro")
+    (t/matches-golden? "variant-typed" (t/render! s))))

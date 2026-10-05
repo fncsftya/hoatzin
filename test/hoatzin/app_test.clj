@@ -1297,7 +1297,7 @@
     (is (= (str "Can't load mode broken.clj: EOF while reading, expected ) to match ( at [1,1]; "
                 "Can't load mode nameless.clj: nameless.clj: not a mode, a map with a :name")
            (:message (t/app s))))
-    (is (= ["auk"] (keys (:modes (t/app s)))) "the others load")))
+    (is (= ["auk" "variants"] (sort (keys (:modes (t/app s))))) "the others load")))
 
 ;; ---------------------------------------------------------------- auk sections
 
@@ -2124,7 +2124,7 @@
   (with-session [s :mode nil :width 1000]
     (is (nil? (hints s)) "none outside the command line")
     (t/type! s ":")
-    (is (= [["buffers"] ["cd"] ["close"] ["mode"] ["new"] ["open"] ["quit"] ["revert"]
+    (is (= [["buffers"] ["cd"] ["close"] ["minor"] ["mode"] ["new"] ["open"] ["quit"] ["revert"]
             ["save"] ["settings"] ["write"]]
            (hints s))
         "every command, alphabetically, on one row while they fit")
@@ -2144,7 +2144,7 @@
   (testing "in two rows, down then across, when they don't fit on one"
     (with-session [s :mode nil :width 220]
       (t/type! s ":")
-      (is (= [["buffers" "cd"] ["close" "mode"]] (hints s)))))
+      (is (= [["buffers" "cd"] ["close" "minor"]] (hints s)))))
   (testing "no more than two rows: the columns that don't fit are left out"
     (is (= [["a" "b"] ["c" "d"]] (#'command/hint-columns ["a" "b" "c" "d" "e" "f"] 10 5 25)))
     (is (= [["a"] ["b"] ["c"]] (#'command/hint-columns ["a" "b" "c"] 10 5 40)))
@@ -2770,3 +2770,264 @@
     (is (= "" (t/text s)))
     (t/type! s "u")
     (is (= "one two" (t/text s)))))
+
+;; ---------------------------------------------------------------- variants
+
+(defn- variants
+  "The current buffer's variants, as the file beside it would keep them."
+  [s]
+  (let [a (t/app s)
+        marks (get-in a [:doc :marks])]
+    (->> (:variants a)
+         (keep (fn [[id {:keys [options selected]}]]
+                 (let [st (get marks [:variant id :start]) e (get marks [:variant id :end])]
+                   (when (< st e) {:start st :end e :options options :selected selected}))))
+         (sort-by :start)
+         vec)))
+
+(defn- variant-file! [s path text]
+  (t/send! s {:type :opened :path path :text text})
+  (t/press! s sdl/K-ESCAPE))
+
+(defn- select-word-at!
+  "Put the caret at `pos` and select the word there, in normal mode."
+  [s pos]
+  (t/press! s sdl/K-UP cmd)
+  (dotimes [_ pos] (t/press! s sdl/K-RIGHT))
+  (t/type! s "w"))
+
+(deftest v-adds-a-variant-of-the-selection
+  (with-session [s]
+    (variant-file! s "/birds/a.txt" "a testing word")
+    (select-word-at! s 2)
+    (is (= "testing" (t/selected s)))
+    (t/type! s "v")
+    (is (= "a  word" (t/text s)) "the selection goes")
+    (is (= 2 (t/caret s)))
+    (is (= :insert (:mode (t/app s))))
+    (let [[_ _ w h] (app/caret-rect (t/app s))]
+      (is (< h w) "the caret is an underline"))
+    (t/type! s "tested")
+    (is (= "a tested word" (t/text s)))
+    (t/press! s sdl/K-RETURN)
+    (is (= "a tested word" (t/text s)) "return keeps it, and isn't typed")
+    (is (= :normal (:mode (t/app s))))
+    (is (nil? (:caret-shape (t/app s))))
+    (is (= 2 (t/caret s)) "the caret goes to its start")
+    (is (= "Variant 2 of 2" (:message (t/app s))))
+    (is (= [{:start 2 :end 8 :options ["testing" "tested"] :selected 1}] (variants s)))))
+
+(deftest n-shows-the-next-wording
+  (with-session [s]
+    (variant-file! s "/birds/a.txt" "a testing word")
+    (select-word-at! s 2)
+    (t/type! s "vtested")
+    (t/press! s sdl/K-RETURN)
+    (t/type! s "n")
+    (is (= "a testing word" (t/text s)))
+    (is (= "Variant 1 of 2" (:message (t/app s))))
+    (is (= [{:start 2 :end 9 :options ["testing" "tested"] :selected 0}] (variants s)))
+    (t/press! s sdl/K-RIGHT)
+    (t/press! s sdl/K-RIGHT)
+    (t/type! s "n")
+    (is (= "a tested word" (t/text s)) "anywhere over it")
+    (is (= 2 (t/caret s)))
+    (t/press! s sdl/K-LEFT)
+    (t/type! s "n")
+    (is (= "a tested word" (t/text s)) "and not off it")
+    (testing "undo puts the wording back, and the variant stays"
+      (t/press! s sdl/K-RIGHT)
+      (t/type! s "n")
+      (is (= "a testing word" (t/text s)))
+      (t/type! s "u")
+      (is (= "a tested word" (t/text s)))
+      (is (= [{:start 2 :end 8 :options ["testing" "tested"] :selected 0}] (variants s)))
+      (t/press! s sdl/K-LEFT)
+      (t/type! s "n")
+      (is (= "a testing word" (t/text s)) "the wording shown is the one it is")
+      (is (= [{:start 2 :end 9 :options ["testing" "tested"] :selected 0}] (variants s))))))
+
+(deftest escape-gives-up-the-variant
+  (with-session [s]
+    (variant-file! s "/birds/a.txt" "a testing word")
+    (select-word-at! s 2)
+    (t/type! s "vtes")
+    (t/press! s sdl/K-ESCAPE)
+    (is (= "a testing word" (t/text s)))
+    (is (= "testing" (t/selected s)) "with the text selected again")
+    (is (= :normal (:mode (t/app s))))
+    (is (= [] (variants s)))))
+
+(deftest a-variant-gets-more-wordings
+  (with-session [s]
+    (variant-file! s "/birds/a.txt" "a testing word")
+    (select-word-at! s 2)
+    (t/type! s "vtested")
+    (t/press! s sdl/K-RETURN)
+    (t/type! s "v")
+    (is (= "a  word" (t/text s)) "over a variant, v takes it all")
+    (t/type! s "tests")
+    (t/press! s sdl/K-ESCAPE)
+    (is (= "a tested word" (t/text s)))
+    (is (= [{:start 2 :end 8 :options ["testing" "tested"] :selected 1}] (variants s))
+        "giving up leaves it as it was")
+    (t/type! s "vtests")
+    (t/press! s sdl/K-RETURN)
+    (is (= "Variant 3 of 3" (:message (t/app s))))
+    (is (= [{:start 2 :end 7 :options ["testing" "tested" "tests"] :selected 2}] (variants s)))
+    (t/type! s "n")
+    (is (= "a testing word" (t/text s)) "round to the first")))
+
+(deftest v-needs-text-of-its-own
+  (with-session [s]
+    (variant-file! s "/birds/a.txt" "a testing word")
+    (t/type! s "v")
+    (is (= "Select the text to add a variant of" (:message (t/app s))))
+    (is (= :normal (:mode (t/app s))))
+    (select-word-at! s 2)
+    (t/type! s "vtested")
+    (t/press! s sdl/K-RETURN)
+    (t/press! s sdl/K-UP cmd)
+    (t/type! s "ws")
+    (t/type! s "v")
+    (is (= "The selection overlaps a variant" (:message (t/app s))))
+    (testing "an empty variant is none"
+      (t/press! s sdl/K-ESCAPE)
+      (select-word-at! s 9)
+      (t/type! s "v")
+      (t/press! s sdl/K-RETURN)
+      (is (= "a tested word" (t/text s)))
+      (is (= "A variant can't be empty" (:message (t/app s))))
+      (is (= 1 (count (variants s)))))))
+
+(deftest typing-a-variant-keeps-to-it
+  (with-session [s]
+    (variant-file! s "/birds/a.txt" "a testing word")
+    (select-word-at! s 2)
+    (t/type! s "vab")
+    (t/press! s sdl/K-LEFT)
+    (t/press! s sdl/K-LEFT)
+    (t/press! s sdl/K-LEFT)
+    (is (= 2 (t/caret s)) "not out past its start")
+    (t/press! s sdl/K-BACKSPACE)
+    (is (= "a ab word" (t/text s)))
+    (t/press! s sdl/K-RIGHT)
+    (t/press! s sdl/K-RIGHT)
+    (t/press! s sdl/K-RIGHT)
+    (is (= 4 (t/caret s)) "nor past its end")
+    (t/press! s sdl/K-DELETE)
+    (is (= "a ab word" (t/text s)))
+    (t/press! s sdl/K-UP)
+    (t/press! s sdl/K-TAB)
+    (is (= 4 (t/caret s)) "other keys do nothing")
+    (t/press! s sdl/K-BACKSPACE)
+    (t/press! s sdl/K-RETURN)
+    (is (= [{:start 2 :end 3 :options ["testing" "a"] :selected 1}] (variants s)))))
+
+(deftest a-click-gives-up-the-variant
+  (with-session [s]
+    (variant-file! s "/birds/a.txt" "a testing word")
+    (select-word-at! s 2)
+    (t/type! s "vx")
+    (t/click! s 300 200)
+    (is (= "a testing word" (t/text s)))
+    (is (= :normal (:mode (t/app s))))))
+
+(deftest a-variant-edited-shows-what-is-there
+  (with-session [s]
+    (variant-file! s "/birds/a.txt" "a testing word")
+    (select-word-at! s 2)
+    (t/type! s "vtested")
+    (t/press! s sdl/K-RETURN)
+    (t/press! s sdl/K-RIGHT)
+    (t/type! s "i")
+    (t/type! s "o")
+    (t/press! s sdl/K-ESCAPE)
+    (is (= "a toested word" (t/text s)))
+    (t/type! s "n")
+    (is (= "a testing word" (t/text s)))
+    (t/type! s "n")
+    (is (= "a toested word" (t/text s)) "the edit is the wording it was")))
+
+(deftest variants-are-kept-beside-the-file
+  (with-session [s]
+    (variant-file! s "/birds/a.txt" "a testing word\n")
+    (is (= [["variants" "-birds-a.txt.edn"]] (:data-asked @s)) "asked for as the file is opened")
+    (t/data-read! s "variants" "-birds-a.txt.edn")
+    (is (= [] (variants s)) "there are none")
+    (select-word-at! s 2)
+    (t/type! s "vtested")
+    (t/press! s sdl/K-RETURN)
+    (is (= {} (:mode-data @s)) "not until the file is written")
+    (t/type! s "n")
+    (t/command! s "w")
+    (is (= "a testing word\n" (get-in @s [:files "/birds/a.txt"])))
+    (is (= {["variants" "-birds-a.txt.edn"]
+            {:variants [{:start 2 :end 9 :options ["testing" "tested"] :selected 0}]}}
+           (:mode-data @s)))
+    (t/command! s "close")
+    (t/send! s {:type :opened :path "/birds/a.txt" :text (get-in @s [:files "/birds/a.txt"])})
+    (is (= [] (variants s)) "they come later")
+    (t/data-read! s "variants" "-birds-a.txt.edn")
+    (is (= [{:start 2 :end 9 :options ["testing" "tested"] :selected 0}] (variants s)))
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-RIGHT)
+    (t/press! s sdl/K-RIGHT)
+    (t/type! s "n")
+    (is (= "a tested word\n" (t/text s)))
+    (testing "read again, they are not had twice"
+      (t/data-read! s "variants" "-birds-a.txt.edn")
+      (is (= 1 (count (variants s)))))
+    (testing "with none left, none are kept"
+      (select-word-at! s 2)
+      (t/type! s "x")
+      (is (= "a  word\n" (t/text s)))
+      (t/command! s "w")
+      (is (= {} (:mode-data @s))))))
+
+(deftest variants-read-are-of-the-text
+  (with-session [s]
+    (swap! s assoc :mode-data {["variants" "-birds-a.txt.edn"]
+                               {:variants [{:start 2 :end 9 :options ["testing" "tested"] :selected 0}
+                                           {:start 4 :end 6 :options ["st" "ST"] :selected 0}
+                                           {:start 10 :end 14 :options ["verb" "word"] :selected 0}
+                                           {:start 10 :end 99 :options ["x" "y"] :selected 0}]}})
+    (variant-file! s "/birds/a.txt" "a testing word")
+    (t/command! s "new")
+    (t/data-read! s "variants" "-birds-a.txt.edn")
+    (is (= [] (variants s)) "the buffer visiting the file has them, wherever it is")
+    (open! s "/birds/a.txt" "")
+    (is (= "/birds/a.txt" (:path (t/app s))))
+    (is (= [{:start 2 :end 9 :options ["testing" "tested"] :selected 0}] (variants s))
+        "but not those overlapping one before, or showing what isn't there")
+    (t/send! s {:type :mode-data :mode "variants" :file "-birds-a.txt.edn" :error "Bad EDN"})
+    (is (= "Can't read variants: Bad EDN" (:message (t/app s))))))
+
+(deftest variants-is-a-minor-mode
+  (with-session [s]
+    (variant-file! s "/birds/a.txt" "a testing word")
+    (is (= #{"variants"} (:minor-modes (t/app s))) "on to begin with")
+    (t/command! s "minor")
+    (is (= "Minor modes: variants (on)" (:message (t/app s))))
+    (t/command! s "minor variants")
+    (is (= "Variants mode off" (:message (t/app s))))
+    (select-word-at! s 2)
+    (t/type! s "v")
+    (is (= :normal (:mode (t/app s))) "off, v is nothing")
+    (t/command! s "minor variants")
+    (is (= [["variants" "-birds-a.txt.edn"] ["variants" "-birds-a.txt.edn"]] (:data-asked @s))
+        "on again, it asks for the file's")
+    (t/command! s "minor nothing")
+    (is (= "No such minor mode: nothing" (:message (t/app s))))
+    (t/command! s "mode variants")
+    (is (= "variants is a minor mode: :minor variants turns it on or off" (:message (t/app s))))
+    (is (nil? (:major-mode (t/app s))))))
+
+(deftest variants-keep-out-of-insets
+  (with-session [s :mode :normal]
+    (auk! s {:content ["a line" {:type :list :content [{:text "an item"}]}]})
+    (t/press! s sdl/K-DOWN)
+    (is (some? (insets/path (t/app s))))
+    (t/type! s "w")
+    (t/type! s "v")
+    (is (= "Variants are only of the buffer's own text" (:message (t/app s))))))

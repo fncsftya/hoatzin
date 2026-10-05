@@ -20,7 +20,10 @@
 
   Each buffer may be in a mode, its :major-mode (see hoatzin.app.modes):
   a file opened is in the mode for its extension, if there is one, which
-  reads the file into the text and its insets (see hoatzin.app.insets)."
+  reads the file into the text and its insets (see hoatzin.app.insets).
+  It is in minor modes too, its :minor-modes: those new buffers are in,
+  until `:minor` turns one off. They see the file it visits as it is
+  opened or reverted."
   (:require [hoatzin.app.files :as files]
             [hoatzin.app.history :as history]
             [hoatzin.app.insets :as insets]
@@ -33,7 +36,7 @@
   "What the app holds of the current buffer, at its top level."
   [:buffer-id :buffer-name :scratch? :path :dir :doc :saved :modified? :compared
    :undo :undo-tail :undo-chain :scroll :goal-x :upstream? :blocks :major-mode
-   :insets :inset :next-inset-id :saved-insets])
+   :minor-modes :insets :inset :next-inset-id :saved-insets :variants :next-variant-id])
 
 (def ^:private passing-keys
   "What belongs to the moment rather than to a buffer, left behind as the
@@ -45,17 +48,19 @@
 (def new-name "untitled")
 
 (defn- fresh
-  "A new, empty buffer, numbered `id`, with `kvs` (see `buffer-keys`)."
-  [id kvs]
+  "A new, empty buffer of `app`'s, numbered `id`, in the minor modes new
+  buffers are in, with `kvs` (see `buffer-keys`)."
+  [app id kvs]
   (merge {:buffer-id id :doc ed/empty-doc :saved (:text ed/empty-doc) :modified? false
           :scroll 0 :blocks {} :goal-x nil :upstream? false
-          :insets {} :next-inset-id 0 :saved-insets []}
+          :minor-modes (modes/default-minors app)
+          :insets {} :next-inset-id 0 :saved-insets [] :variants {} :next-variant-id 0}
          kvs))
 
 (defn init
   "The app with the scratch buffer as its only buffer, in directory `dir`."
   [app dir]
-  (let [b (fresh 0 {:buffer-name scratch-name :scratch? true :dir dir})]
+  (let [b (fresh app 0 {:buffer-name scratch-name :scratch? true :dir dir})]
     (merge (apply dissoc app buffer-keys)
            b
            {:buffers [b] :next-buffer-id 1})))
@@ -124,7 +129,7 @@
   switch to it."
   [app now kvs]
   (let [app (stash app)
-        b   (fresh (:next-buffer-id app) kvs)]
+        b   (fresh app (:next-buffer-id app) kvs)]
     (-> app
         (update :buffers conj b)
         (update :next-buffer-id inc)
@@ -163,7 +168,8 @@
                               :doc (assoc ed/empty-doc :text t)})
                 (insets/load-all (:insets doc))
                 files/mark-saved
-                (assoc :message (str "\"" file "\" " (files/file-lines t) " lines")))))))))
+                (assoc :message (str "\"" file "\" " (files/file-lines t) " lines"))
+                modes/opened)))))))
 
 (defn close
   "Close the current buffer, unless it has unsaved changes and not
@@ -180,7 +186,7 @@
             app  (assoc app :buffers left :message (str "Closed \"" name "\""))]
         (if (seq left)
           (show app now (left (max 0 (dec i))))
-          (let [b (fresh (:next-buffer-id app) {:buffer-name scratch-name :scratch? true
+          (let [b (fresh app (:next-buffer-id app) {:buffer-name scratch-name :scratch? true
                                                 :dir (:dir app)})]
             (-> app (assoc :buffers [b]) (update :next-buffer-id inc) (show now b))))))))
 
@@ -211,6 +217,7 @@
               (history/record old 0 (count (:text old)) s)
               (insets/load-all (:insets read))
               files/mark-saved
+              modes/opened
               (touched now)))))
     (assoc app :message (str "\"" (buffer-name app) "\" has no file to revert to") :dirty? true)))
 

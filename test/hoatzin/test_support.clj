@@ -167,6 +167,9 @@
   :dir-dialogs, reads from :files, a map of path to text, and writes into
   it, unless there is a :write-error to fail with. It saves its settings
   into :saved-settings, unless there is a :settings-error to fail with.
+  The minor modes' data it is asked for is noted in :data-asked, as
+  [mode file], to be answered with `data-read!`, and what it is given to
+  keep is kept in :mode-data, by [mode file].
   `dir` is its working directory, nil unless given, and `mode-sources`
   modes besides the editor's own (see hoatzin.app/create).
   Close with `close!`."
@@ -174,7 +177,8 @@
       :or   {width 400 height 300 density 2.0 clipboard "" mode :insert}}]
   (let [c (canvas (long (* width density)) (long (* height density)))
         s (atom {:canvas c :now 0 :clipboard clipboard :density density :dialogs 0
-                 :open-dialogs [] :save-dialogs [] :dir-dialogs [] :files {}})]
+                 :open-dialogs [] :save-dialogs [] :dir-dialogs [] :files {}
+                 :data-asked [] :mode-data {}})]
     (swap! s assoc :app (app/create (cond-> {:renderer     (:renderer c)
                                              :density-fn   (constantly (double density))
                                              :clipboard-fn #(:clipboard @s)
@@ -196,6 +200,13 @@
                                                (or (:settings-error @s)
                                                    (do (swap! s assoc :saved-settings settings) nil)))
                                              :font-families-fn (constantly font-families)
+                                             :load-mode-data-fn #(swap! s update :data-asked conj [%1 %2])
+                                             :save-mode-data-fn
+                                             (fn [mode file data]
+                                               (swap! s (fn [st] (if (nil? data)
+                                                                   (update st :mode-data dissoc [mode file])
+                                                                   (assoc-in st [:mode-data [mode file]] data))))
+                                               nil)
                                              :now          0}
                                       mode (assoc :mode mode)
                                       mode-sources (assoc :mode-sources mode-sources))))
@@ -274,6 +285,12 @@
   [s ms]
   (swap! s update :now + ms)
   s)
+
+(defn data-read!
+  "The host's answer to the editor asking for minor mode `mode`'s file
+  `file`: what it kept there, if anything."
+  [s mode file]
+  (send! s {:type :mode-data :mode mode :file file :data (get-in @s [:mode-data [mode file]])}))
 
 (defn set-clipboard! [s text] (swap! s assoc :clipboard text) s)
 

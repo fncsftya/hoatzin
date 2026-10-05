@@ -32,7 +32,32 @@
                                        before the editor's own
      :inset-title \"Section\"           what an inset's header says}
 
-  every key but :name optional. A doc is the text with its insets (see
+  every key but :name optional.
+
+  Minor modes, after Emacs's, are modes too, but a buffer may be in any
+  number of them at once, its :minor-modes, each turned on and off with
+  `:minor`. A minor mode is a map as a mode is, of :name, :normal,
+  :insert, :commands and :help, and also
+    :minor?     true                  what makes it a minor mode
+    :default?   true                  whether each new buffer is in it
+  and, for the editor's own, which work on the editor beyond what
+  hoatzin.mode gives:
+    :opened     (fn [app] app)        the buffer has visited its file
+    :written    (fn [app] app)        the buffer has written its file
+    :loaded     (fn [app event] app)  a :mode-data event for it: what it
+                                      asked the host to load, as the
+                                      hoatzin.app ns doc says
+    :on-event   (fn [app now event] app)
+                                      an event, before the text has it; nil
+                                      leaves it to the text
+    :status     (fn [app] s)          what the status bar says, or nil
+    :draw       (fn [app k0 k1])      draw over the text's visual lines
+                                      [k0, k1)
+  A minor mode's keys and commands come before the buffer's mode's, and
+  one that answers nil leaves the key to the next. The editor's own minor
+  modes are hoatzin.app.variants.
+
+  A doc is the text with its insets (see
   hoatzin.app.insets): {:text s :insets [{:after k :text s :insets [...]}
   ...]}, the insets in order down the text, each below paragraph :after
   (-1: above the first) and each with its own insets, as a doc has them,
@@ -182,16 +207,28 @@
 
 ;; ---------------------------------------------------------------- the buffer's
 
+(defn minor? [m] (boolean (:minor? m)))
+
 (defn current
   "The current buffer's mode, or nil."
   [app]
   (some->> (:major-mode app) (get (:modes app))))
 
+(defn minors
+  "The minor modes the current buffer is in, by name."
+  [app]
+  (keep #(get (:modes app) %) (sort (:minor-modes app))))
+
+(defn default-minors
+  "The names of the minor modes a new buffer is in."
+  [app]
+  (into #{} (keep (fn [[name m]] (when (and (minor? m) (:default? m)) name))) (:modes app)))
+
 (defn for-path
   "The name of the mode for files like `path`, by its extension, or nil."
   [app path]
   (when-let [ext (some->> path (re-find #"\.([^./]+)$") second)]
-    (some (fn [[name m]] (when (some #{ext} (:extensions m)) name))
+    (some (fn [[name m]] (when (and (not (minor? m)) (some #{ext} (:extensions m))) name))
           (sort-by key (:modes app)))))
 
 (defn- inset-spec?
@@ -247,23 +284,38 @@
       {:text (:text doc)})))
 
 (defn- guarded
-  "Mode function `f`, which takes the app and answers it, or nil to leave
-  it to the editor: a mode's mistake, thrown or answering something else,
-  leaves the app as it was and says what it was."
-  [f]
-  (fn [app & args]
-    (let [mode (:major-mode app)]
-      (try (let [app' (apply f app args)]
-             (if (or (nil? app') (map? app'))
-               app'
-               (message app (str mode " mode answered no app"))))
-           (catch Exception e
-             (message app (str (ex-message e) " (" mode " mode)")))))))
+  "Mode function `f`, of the mode named `mode` (the buffer's, if not
+  given), which takes the app and answers it, or nil to leave it to the
+  editor: a mode's mistake, thrown or answering something else, leaves
+  the app as it was and says what it was."
+  ([f] (fn [app & args] (apply (guarded (:major-mode app) f) app args)))
+  ([mode f]
+   (fn [app & args]
+     (try (let [app' (apply f app args)]
+            (if (or (nil? app') (map? app'))
+              app'
+              (message app (str mode " mode answered no app"))))
+          (catch Exception e
+            (message app (str (ex-message e) " (" mode " mode)")))))))
+
+(defn- in-turn
+  "The mode functions `fs` as one, which answers what the first to answer
+  anything does, or nil if none do; nil if there are none."
+  [fs]
+  (when (seq fs)
+    (fn [app & args] (some #(apply % app args) fs))))
+
+(defn- each-mode
+  "The current buffer's minor modes, then its mode, as [name mode]."
+  [app]
+  (cond-> (mapv (juxt :name identity) (minors app))
+    (current app) (conj [(:major-mode app) (current app)])))
 
 (defn normal-command
-  "The current buffer's mode's normal mode command for `text`, or nil."
+  "The current buffer's modes' normal mode command for `text`, or nil."
   [app text]
-  (some-> (get-in (current app) [:normal text]) guarded))
+  (in-turn (keep (fn [[name m]] (some->> (get-in m [:normal text]) (guarded name)))
+                 (each-mode app))))
 
 (def ^:private modifiers
   "The modifiers a key binding can name, in the order its name has them."
@@ -297,33 +349,115 @@
       (str/join "+" (concat (filter mods known) [(last parts)])))))
 
 (defn- key-command
-  "The command bound in `bindings` to key `key` with modifiers `mod`, or
-  nil."
-  [bindings key mod]
+  "The command bound in mode `name`'s `bindings` to key `key` with
+  modifiers `mod`, or nil."
+  [name bindings key mod]
   (when-let [c (chord key mod)]
-    (some (fn [[k f]] (when (= c (canonical k)) (guarded f))) bindings)))
+    (some (fn [[k f]] (when (= c (canonical k)) (guarded name f))) bindings)))
+
+(defn- modes-key
+  "The current buffer's modes' commands in `kind` (:normal or :insert)
+  for key `key` with modifiers `mod`, as one, or nil."
+  [app kind key mod]
+  (in-turn (keep (fn [[name m]] (key-command name (kind m) key mod)) (each-mode app))))
 
 (defn normal-key
-  "The current buffer's mode's normal mode command for key `key` with
+  "The current buffer's modes' normal mode command for key `key` with
   modifiers `mod`, or nil."
   [app key mod]
-  (key-command (:normal (current app)) key mod))
+  (modes-key app :normal key mod))
 
 (defn insert-key
-  "The current buffer's mode's insert mode command for key `key` with
+  "The current buffer's modes' insert mode command for key `key` with
   modifiers `mod`, or nil."
   [app key mod]
-  (key-command (:insert (current app)) key mod))
+  (modes-key app :insert key mod))
 
 (defn help
   "The current buffer's mode's sections of the help window."
   [app]
   (:help (current app)))
 
-(defn commands
-  "The current buffer's mode's command line commands, by name."
+(defn minor-help
+  "The current buffer's minor modes' sections of the help window."
   [app]
-  (update-vals (:commands (current app)) guarded))
+  (mapcat :help (minors app)))
+
+(defn commands
+  "The current buffer's modes' command line commands, by name: its
+  minor modes' over its mode's."
+  [app]
+  (reduce (fn [cs [name m]] (merge (update-vals (:commands m) #(guarded name %)) cs))
+          {} (each-mode app)))
+
+;; ---------------------------------------------------------------- minor modes' hooks
+
+(defn- run-hooks
+  "The app after `hook` of each minor mode the buffer is in, in turn."
+  [app hook & args]
+  (reduce (fn [app m] (if-let [f (hook m)] (apply f app args) app)) app (minors app)))
+
+(defn opened
+  "The app after its minor modes have seen the buffer visit its file."
+  [app]
+  (run-hooks app :opened))
+
+(defn written
+  "The app after its minor modes have seen the buffer write its file."
+  [app]
+  (run-hooks app :written))
+
+(defn loaded
+  "The app after the minor mode a :mode-data `event` is for has it."
+  [app event]
+  (if-let [f (:loaded (get (:modes app) (:mode event)))]
+    (f app event)
+    app))
+
+(defn on-event
+  "The app after the first of the buffer's minor modes to take `event`
+  has, or nil if none do."
+  [app now event]
+  (some #(some-> (:on-event %) (as-> f (f app now event))) (minors app)))
+
+(defn status
+  "What the buffer's minor modes have the status bar say, or nil."
+  [app]
+  (some #(some-> (:status %) (as-> f (f app))) (minors app)))
+
+(defn draw!
+  "Draw what the buffer's minor modes show over its visual lines [k0, k1)."
+  [app k0 k1]
+  (doseq [m (minors app)]
+    (some-> (:draw m) (as-> f (f app k0 k1)))))
+
+(defn toggle-minor
+  "Turn minor mode `name` on in the current buffer, or off; it says
+  which, and the hooks of one turned on see the buffer's file as if just
+  visited. Without a name, says which the buffer is in, and which there
+  are."
+  [app name]
+  (let [app (assoc app :dirty? true)
+        all (sort (keep (fn [[n m]] (when (minor? m) n)) (:modes app)))]
+    (cond
+      (str/blank? name)
+      (assoc app :message (str "Minor modes: "
+                               (if (seq all)
+                                 (str/join ", " (map #(str % (if (contains? (:minor-modes app) %) " (on)" " (off)"))
+                                                     all))
+                                 "none")))
+
+      (not (minor? (get (:modes app) name)))
+      (assoc app :message (str "No such minor mode: " name))
+
+      (contains? (:minor-modes app) name)
+      (-> app (update :minor-modes disj name) (assoc :message (str (str/capitalize name) " mode off")))
+
+      :else
+      (let [m   (get (:modes app) name)
+            app (-> app (update :minor-modes (fnil conj #{}) name)
+                    (assoc :message (str (str/capitalize name) " mode on")))]
+        (if-let [f (and (:path app) (:opened m))] (f app) app)))))
 
 (defn switch
   "Put the current buffer in mode `name`; \"text\", or nothing, takes it
@@ -333,7 +467,11 @@
     (cond
       (str/blank? name)
       (assoc app :message (str "Mode " (or (:major-mode app) "text") "; modes: "
-                               (str/join ", " (cons "text" (sort (keys (:modes app)))))))
+                               (str/join ", " (cons "text" (sort (keep (fn [[n m]] (when-not (minor? m) n))
+                                                                       (:modes app)))))))
+
+      (minor? (get (:modes app) name))
+      (assoc app :message (str name " is a minor mode: :minor " name " turns it on or off"))
 
       (= "text" name)
       (-> app (dissoc :major-mode) (assoc :message "Text mode"))

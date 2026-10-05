@@ -53,6 +53,7 @@
      [":revert" "read the buffer's file again"]
      [":cd" "choose the buffer's directory"]
      [":mode name" "put the buffer in a mode (text for none)"]
+     [":minor name" "turn a minor mode on or off"]
      [":quit" "quit (:quit! to discard changes)"]
      [":settings" "show the settings"]]]])
 
@@ -60,9 +61,10 @@
 (def ^:private gap "Points between the help window's rows." 4)
 
 (defn- sections
-  "The sections shown: the mode's, then the editor's."
+  "The sections shown: the mode's, then the editor's, then the minor
+  modes'."
   [app]
-  (concat (modes/help app) commands))
+  (concat (modes/help app) commands (modes/minor-help app)))
 
 (defn- items
   "The sections flattened to the rows that scroll: [:title s] or [:row keys description]."

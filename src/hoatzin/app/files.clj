@@ -49,7 +49,8 @@
 (defn write-file
   "Write the text to `path`, which is then the file it is the text of,
   and whose directory is the buffer's. The buffer's mode writes it; a
-  buffer in none takes the mode for `path`'s extension, if there is one."
+  buffer in none takes the mode for `path`'s extension, if there is one.
+  Its minor modes see it written."
   [app path]
   (let [t    (get-in app [:doc :text])
         file (file-name path)
@@ -61,7 +62,8 @@
              (assoc app :message (str "Can't write " file ": " error))
              (cond-> (-> (assoc app :path path :dir (parent path) :saved t
                                 :message (str "\"" file "\" " (file-lines t) " lines written"))
-                         mark-saved)
+                         mark-saved
+                         modes/written)
                mode (assoc :major-mode mode)))
            :dirty? true)))
 

@@ -62,9 +62,11 @@
                            :chars (+ (if join? (:chars tail) 0) (max (count old) (count s)))})))))
 
 (defn- apply-change
-  "The document with change `c` made, and the change that undoes it."
+  "The document with change `c` made, and the change that undoes it: in
+  one replacement, so that a mark at the end of what is replaced (see
+  hoatzin.lib.editor) goes to the end of what replaces it."
   [doc {:keys [lo old new]}]
-  (let [doc (cond-> (ed/delete doc lo (+ lo (count new))) (seq old) (-> (ed/move lo) (ed/insert old)))]
+  (let [doc (-> doc (ed/move lo) (ed/select (+ lo (count new))) (ed/insert old))]
     [(ed/move doc (+ lo (count old))) {:lo lo :old new :new old}]))
 
 (defn- undo-group

@@ -1,6 +1,7 @@
 (ns hoatzin.core
   "The desktop host: an SDL window whose events drive hoatzin.app."
   (:require [babashka.fs :as fs]
+            [clojure.edn :as edn]
             [clojure.string :as str]
             [jolt.ffi :as ffi]
             [hoatzin.app :as app]
@@ -84,6 +85,51 @@
   (try (spit path s) nil
        (catch Exception e (ex-message e))))
 
+;; ---------------------------------------------------------------- minor modes' data
+
+;; A minor mode's data is read on a future's thread, so that the editor
+;; never waits on it. The thread leaves what it read in `arrived`, an atom,
+;; and wakes the event loop with a user event; the loop takes it from
+;; there, so the app itself is only ever touched on the loop's thread.
+
+(defn- mode-data-path
+  "Where minor mode `mode` keeps its file `file`."
+  [mode file]
+  (str (fs/path (settings/modes-dir) mode file)))
+
+(defn- wake!
+  "Wake the event loop, from any thread."
+  []
+  (ffi/with-alloc [ev sdl/EVENT-SIZE]
+    (ffi/write ev :uint sdl/EVENT-USER sdl/O-event-type)
+    (sdl/push-event ev)))
+
+(defn- mode-data
+  "{:load! f :save! g :take! h}: (`load!` mode file) reads minor mode
+  `mode`'s file `file` as EDN, on a thread of its own, and wakes the event
+  loop; (`save!` mode file data) writes `data` there as EDN, or with
+  `data` nil deletes it, returning nil, or why it could not; and `take!`
+  answers what has been read since it last did, as :mode-data events."
+  []
+  (let [arrived (atom [])]
+    {:load! (fn [mode file]
+              (future
+                (let [path (mode-data-path mode file)
+                      read (try {:data (when (fs/exists? path) (edn/read-string (slurp path)))}
+                                (catch Exception e {:error (ex-message e)}))]
+                  (swap! arrived conj (merge {:type :mode-data :mode mode :file file} read))
+                  (wake!)))
+              nil)
+     :save! (fn [mode file data]
+              (let [path (mode-data-path mode file)]
+                (try (if (nil? data)
+                       (fs/delete-if-exists path)
+                       (do (fs/create-dirs (fs/parent path))
+                           (spit path (str (pr-str data) "\n"))))
+                     nil
+                     (catch Exception e (ex-message e)))))
+     :take! (fn [] (first (reset-vals! arrived [])))}))
+
 ;; ---------------------------------------------------------------- events
 
 (defn- decode
@@ -140,16 +186,21 @@
 
 (defn- run-loop
   "Run until quit. `latest` always holds the current app, for cleanup.
-  `cursors` maps hoatzin.app/pointer's answers to SDL cursors."
-  [window latest dialogs ev irect cursors]
+  `cursors` maps hoatzin.app/pointer's answers to SDL cursors; `data` is
+  the minor modes' data, from `mode-data`."
+  [window latest dialogs data ev irect cursors]
   (let [renderer (:renderer @latest)
         step (fn [app]
-               ;; a closed file dialog leaves the window without the focus
-               (when (= sdl/EVENT-USER (ffi/read ev :uint sdl/O-event-type))
-                 (sdl/raise-window window))
-               (if-let [e (decode renderer dialogs ev)]
-                 (app/handle app e (sdl/get-ticks))
-                 app))]
+               (let [user? (= sdl/EVENT-USER (ffi/read ev :uint sdl/O-event-type))
+                     e     (decode renderer dialogs ev)
+                     app   (if e (app/handle app e (sdl/get-ticks)) app)]
+                 ;; a closed file dialog leaves the window without the focus
+                 (when (and user? (#{:opened :save-chosen :dir-chosen} (:type e)))
+                   (sdl/raise-window window))
+                 ;; a user event may also be a minor mode's data, read
+                 (if user?
+                   (reduce #(app/handle %1 %2 (sdl/get-ticks)) app ((:take! data)))
+                   app)))]
     (loop [app @latest, shown-pointer nil]
       (reset! latest app)
       (when-not (:quit? app)
@@ -187,6 +238,7 @@
                    :arrow (sdl/create-system-cursor sdl/SYSTEM-CURSOR-DEFAULT)}
           latest (atom nil)
           dialogs (file-dialogs window)
+          data    (mode-data)
           settings-file (settings/file)
           {:keys [error] :as loaded} (settings/read-file settings-file)
           modes (user-modes (settings/modes-dir))]
@@ -205,6 +257,8 @@
                                     :settings     (:settings loaded)
                                     :save-settings-fn #(settings/write-file! settings-file %)
                                     :font-families-fn ct/font-families
+                                    :load-mode-data-fn (:load! data)
+                                    :save-mode-data-fn (:save! data)
                                     :mode-sources (:sources modes)
                                     :message      (some->> (cond->> (:errors modes)
                                                              error (cons (str "Can't read settings: " error)))
@@ -212,7 +266,7 @@
                                                            (str/join "; "))
                                     :now          (sdl/get-ticks)}))
         (with-open [a (ffi/confined-arena)]
-          (run-loop window latest dialogs (ffi/alloc a sdl/EVENT-SIZE) (ffi/alloc a sdl/rect) cursors))
+          (run-loop window latest dialogs data (ffi/alloc a sdl/EVENT-SIZE) (ffi/alloc a sdl/rect) cursors))
         (finally
           (some-> @latest app/destroy!)
           (run! sdl/destroy-cursor (vals cursors))

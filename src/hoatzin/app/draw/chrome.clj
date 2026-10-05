@@ -6,6 +6,7 @@
             [hoatzin.app.confirm :as confirm]
             [hoatzin.app.face :refer [face-line ui-width]]
             [hoatzin.app.geometry :refer [text-height status-height]]
+            [hoatzin.app.modes :as modes]
             [hoatzin.app.scroll :refer [scrollbar]]
             [hoatzin.app.state :refer [px]]
             [hoatzin.lib.sdl :as sdl]
@@ -34,12 +35,13 @@
 (def ^:private mode-labels {:normal "NORMAL" :insert "INSERT"})
 
 (defn- status-text
-  "What the status bar says on its left: the command line, a question, a
-  message, or the mode."
+  "What the status bar says on its left: the command line, a question,
+  what a minor mode has it say, a message, or the mode."
   [{:keys [mode message] :as app}]
   (cond (= mode :command) (command/line-text app)
         (:confirm app)    (confirm/prompt app)
         (:renaming app)   "Renaming: return keeps, esc cancels"
+        (modes/status app) (modes/status app)
         message           message
         :else             (mode-labels mode)))
 

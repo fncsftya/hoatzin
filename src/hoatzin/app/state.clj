@@ -70,6 +70,13 @@
 ;;                                         hoatzin.app.modes
 ;;   :major-mode                           the name of the current buffer's
 ;;                                         mode, or nil
+;;   :minor-modes                          the names of the minor modes it
+;;                                         is in, a set
+;;   :variants :next-variant-id            its variants, by id, and the id the
+;;   :variant-edit                         next is to have, and the one being
+;;                                         typed: see hoatzin.app.variants
+;;   :caret-shape                          :underline for the caret to be one,
+;;                                         else nil
 ;;   :insets :inset :next-inset-id         the current buffer's insets, the
 ;;   :saved-insets :inset-ctx              one the caret is in, the number
 ;;                                         the next is to have, what they

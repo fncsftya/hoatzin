@@ -31,15 +31,25 @@
       [x (+ x (px app (/ (get-in app [:settings :editor-font :size]) 2)))])))
 
 (defn- text-caret-rect
-  "A bar in insert mode, a block in normal mode."
+  "A bar in insert mode, a block in normal mode; an underline, as wide as
+  the block, if the :caret-shape is :underline."
   [app]
   (let [{:keys [layout scroll]} app
-        {:keys [caret-top caret-height]} (:metrics layout)
+        {:keys [caret-top caret-height baseline]} (:metrics layout)
         [ox oy] (geo/origin app)
         [x k] (geo/caret-place app)
-        y (+ oy (- (geo/line-top app k) scroll) caret-top)]
-    (if (insert? app)
+        top (+ oy (- (geo/line-top app k) scroll))
+        y (+ top caret-top)]
+    (cond
+      (= :underline (:caret-shape app))
+      (let [[x0 x1] (block-extent app x k)
+            x0 (long (Math/floor x0))]
+        [(+ ox x0) (+ top baseline (px app 2)) (max 1 (- (long (Math/ceil x1)) x0)) (max 1 (px app 2))])
+
+      (insert? app)
       [(+ ox (long (Math/floor x))) y (max 1 (px app 1)) caret-height]
+
+      :else
       (let [[x0 x1] (block-extent app x k)
             x0 (long (Math/floor x0))]
         [(+ ox x0) y (max 1 (- (long (Math/ceil x1)) x0)) caret-height]))))

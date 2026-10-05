@@ -60,6 +60,12 @@ A file takes the mode for its extension as it is opened or saved; `:mode name` c
 
 Your own go in `modes` in `hoatzin` under `$XDG_CONFIG_HOME`, one `.clj` file each.
 
+### Minor modes
+
+A buffer can also be in any number of minor modes at once, which add keys and commands as a mode does (see `src/hoatzin/app/modes.clj`). `:minor name` turns one on or off in the buffer; `:minor` lists them. The editor's own:
+
+- **variants**, on by default: other wordings of a part of the text. In normal mode, `v` with a selection starts a variant of it: the text goes, the caret becomes an underline, and what you type is the variant (`return` keeps it, `esc` puts the text back). Over a variant, `n` shows its next wording, and `v` adds another. Each variant shows a dot (up to three) for each wording, below its start. They're kept as EDN beside the file, written when it is, in `hoatzin/modes/variants/` under `$XDG_CONFIG_HOME`, named for the file's absolute path with `/` as `-` (`/notes/a.txt` → `-notes-a.txt.edn`), and read without waiting when the file is opened.
+
 ## Settings
 
 Settings are saved to `settings.json` in `hoatzin` under `$XDG_CONFIG_HOME` (`~/.config` by default).
