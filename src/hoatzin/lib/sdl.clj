@@ -81,6 +81,8 @@
 (def TEXTUREACCESS-STATIC 0)
 (def TEXTUREACCESS-TARGET 2)
 (def BLENDMODE-BLEND-PREMULTIPLIED 0x10)
+(def BLENDMODE-NONE 0x0)
+(def BLENDMODE-BLEND 0x1)
 
 (def frect (ffi/layout [:struct [[:x :float] [:y :float] [:w :float] [:h :float]]]))
 (def rect  (ffi/layout [:struct [[:x :int] [:y :int] [:w :int] [:h :int]]]))
@@ -128,6 +130,7 @@
 (ffi/defcfn set-render-draw-color "SDL_SetRenderDrawColor"
   [:pointer :uint8 :uint8 :uint8 :uint8] :bool)
 (ffi/defcfn set-render-clip-rect "SDL_SetRenderClipRect" [:pointer :pointer] :bool)
+(ffi/defcfn set-render-draw-blend-mode "SDL_SetRenderDrawBlendMode" [:pointer :uint] :bool)
 (ffi/defcfn render-clear      "SDL_RenderClear"     [:pointer] :bool)
 (ffi/defcfn render-fill-rect  "SDL_RenderFillRect"  [:pointer :pointer] :bool)
 (ffi/defcfn render-present    "SDL_RenderPresent"   [:pointer] :bool)

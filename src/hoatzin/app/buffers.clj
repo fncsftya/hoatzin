@@ -36,7 +36,8 @@
   "What the app holds of the current buffer, at its top level."
   [:buffer-id :buffer-name :scratch? :path :dir :doc :saved :modified? :compared
    :undo :undo-tail :undo-chain :scroll :goal-x :upstream? :blocks :major-mode
-   :minor-modes :insets :inset :next-inset-id :saved-insets :variants :next-variant-id])
+   :minor-modes :insets :inset :next-inset-id :saved-insets :variants :dims :next-variant-id
+   :tag :tag-color])
 
 (def ^:private passing-keys
   "What belongs to the moment rather than to a buffer, left behind as the
@@ -54,7 +55,7 @@
   (merge {:buffer-id id :doc ed/empty-doc :saved (:text ed/empty-doc) :modified? false
           :scroll 0 :blocks {} :goal-x nil :upstream? false
           :minor-modes (modes/default-minors app)
-          :insets {} :next-inset-id 0 :saved-insets [] :variants {} :next-variant-id 0}
+          :insets {} :next-inset-id 0 :saved-insets [] :variants {} :dims #{} :next-variant-id 0}
          kvs))
 
 (defn init
@@ -189,6 +190,25 @@
           (let [b (fresh app (:next-buffer-id app) {:buffer-name scratch-name :scratch? true
                                                 :dir (:dir app)})]
             (-> app (assoc :buffers [b]) (update :next-buffer-id inc) (show now b))))))))
+
+(defn close-buffer
+  "Close the buffer numbered `id`, unsaved changes or not: the current
+  one as `close` does, any other leaving the current one shown."
+  [app now id]
+  (if (= id (:buffer-id app))
+    (close app now true)
+    (let [app  (stash app)
+          name ((names (:buffers app)) id)]
+      (assoc app :buffers (filterv #(not= id (:buffer-id %)) (:buffers app))
+             :message (str "Closed \"" name "\"") :dirty? true))))
+
+(defn update-buffer
+  "The app with buffer `id` as (`f` buffer args...): the current one's
+  keys at the top of the app, any other's in :buffers."
+  [app id f & args]
+  (if (= id (:buffer-id app))
+    (apply f app args)
+    (update app :buffers (fn [bs] (mapv #(if (= id (:buffer-id %)) (apply f % args) %) bs)))))
 
 (defn revert
   "Read the current buffer's file again, in its mode, replacing its text;

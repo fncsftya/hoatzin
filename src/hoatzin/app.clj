@@ -20,7 +20,8 @@
   EDN, without waiting for it: it comes back as :mode-data, and it must be
   read where nothing waits on it) and :save-mode-data-fn (keep data d as
   minor mode m's file f, as EDN, or with d nil keep no such file,
-  returning nil, or why it could not).
+  returning nil, or why it could not). :rand-fn, a random number from 0
+  to 1, is `rand` unless given.
   That is what lets tests drive the editor headlessly and deterministically.
 
   The editor is modal. In :normal mode the text is left alone: keys move the
@@ -181,6 +182,7 @@
                          :write-file-fn (fn [_ _] "no file system")
                          :save-settings-fn (fn [_])
                          :font-families-fn (constantly [])
+                         :rand-fn      rand
                          :load-mode-data-fn (fn [_ _])
                          :save-mode-data-fn (fn [_ _ _])
                          :option-faces (atom {})

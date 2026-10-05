@@ -365,10 +365,11 @@
   it:
     - in a list, below the item the caret is in, after any others there;
     - if the caret is in an inset that can't hold it, or over a folded
-      one, just after that, with a new line after it to go on writing in;
+      one, just after that, with a new line after it to go on writing in,
+      unless there is a line after it already;
     - on an empty line, in that line's place, the line after it;
     - else below the line the caret is in, after any others there, with a
-      new line after it."
+      new line after it, unless there is one already."
   [level level-kind now spec]
   (let [id  (:next-inset-id level 0)
         old (:doc level)
@@ -388,9 +389,11 @@
                    (/ (+ (:order cur) (reduce min next)) 2.0)
                    (inc (:order cur)))
                  (inc (reduce max -1 orders)))
-        new-line? (not (or in-place? (list-kind? {:kind level-kind})))
         ;; the new line goes after the paragraph, and so after the insets below it
-        end (if above? 0 (let [[_ start line] (text/line-at t pos)] (+ start (count line))))]
+        end (if above? 0 (let [[_ start line] (text/line-at t pos)] (+ start (count line))))
+        new-line? (not (or in-place? (list-kind? {:kind level-kind})
+                           ;; a line after it already is the one to go on in
+                           (and (not above?) (< end (count t)))))]
     (-> (if new-line?
           (-> level
               (assoc :doc (-> old (ed/move end) (ed/insert "\n") (ed/move (:caret old))))

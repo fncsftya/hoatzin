@@ -6,7 +6,8 @@
   A command runs from any prefix that begins no other, so `:w` is
   `:write`, and tab completes as far as the commands it could be agree.
   What follows the command's name, after a space, is its argument, as in
-  `:mode auk`. The current buffer's mode (see hoatzin.app.modes) may add
+  `:mode auk`; for `:mode` and `:minor`, tab completes it too, from the
+  modes' names, and the hints list those it could be. The current buffer's mode (see hoatzin.app.modes) may add
   commands, or replace the editor's own."
   (:require [clojure.string :as str]
             [hoatzin.app.buffers :as buffers]
@@ -133,12 +134,43 @@
 (defn- shared-start [a b]
   (subs a 0 (count (take-while true? (map = a b)))))
 
+(defn- arguments
+  "What the argument of command `name` may be, for completing it, or nil
+  if it could be anything."
+  [app name]
+  (case name
+    "mode"  (modes/major-names app)
+    "minor" (modes/minor-names app)
+    nil))
+
+(defn- argument-split
+  "Command line `command` as [what is before its argument, its
+  argument], or nil if it has none yet."
+  [command]
+  (when-let [[_ head arg] (re-find #"^(\s*\S+\s+)(.*)$" command)]
+    [head arg]))
+
+(defn- arguments-beginning
+  "The arguments the command on command line `command` may take that
+  begin what is typed of its argument, or nil if it has none yet, or
+  the command could be anything or takes anything."
+  [app command]
+  (when-let [[_ arg] (argument-split command)]
+    (let [[typed] (parse-command command)
+          names   (command-names app typed)]
+      (when (= 1 (count names))
+        (seq (filter #(str/starts-with? % arg) (arguments app (first names))))))))
+
 (defn- complete
   "The command line completed as far as the commands it could mean agree;
-  once it has an argument, as it is."
+  once it has an argument, as far as the arguments it could be agree."
   [app command]
-  (let [names (when-not (re-find #"\S\s" command) (command-names app (str/triml command)))]
-    (if (seq names) (reduce shared-start names) command)))
+  (if-let [[head] (argument-split command)]
+    (if-let [args (arguments-beginning app command)]
+      (str head (reduce shared-start args))
+      command)
+    (let [names (command-names app (str/triml command))]
+      (if (seq names) (reduce shared-start names) command))))
 
 (defn on-text
   "Typed text, onto the end of the command line."
@@ -181,14 +213,17 @@
 
 (defn hints
   "While the command line is open, a float across the window just above
-  the status bar, listing the commands that what is typed begins,
+  the status bar, listing the commands that what is typed begins, or,
+  once it has an argument, the arguments it could be,
   alphabetically, in line with the status bar's text; nil
   when it begins none."
   [app]
   (when (and (command? app) (not (:goto? app)))
     (let [[typed] (parse-command (:command app))
           ;; once there is an argument, the command is chosen
-          names (when-not (re-find #"\S\s" (:command app)) (names-beginning app typed))]
+          names (if (argument-split (:command app))
+                  (arguments-beginning app (:command app))
+                  (names-beginning app typed))]
       (when (seq names)
         (let [d       (:density app)
               [w]     (:size app)

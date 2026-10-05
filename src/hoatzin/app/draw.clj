@@ -114,6 +114,7 @@
     ;; the text area
     (sdl/set-render-clip-rect renderer (sdl/set-rect! (:irect scratch) 0 m w vh))
     (draw-selection! app first-k last-k)
+    (modes/draw-under! app first-k last-k)
     (draw-lines! app first-k last-k)
     (draw-composition! app first-k last-k)
     (modes/draw! app first-k last-k)

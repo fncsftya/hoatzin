@@ -113,7 +113,8 @@
   [app now event]
   (let [window (:window app)]
     (case (:type event)
-      :key   (cond (= sdl/K-ESCAPE (:key event)) (close-window app)
+      :key   (cond (= sdl/K-ESCAPE (:key event)) (or (when (= :buffers window) (buffers-window/on-escape app))
+                                                     (close-window app))
                    (= :help window)              (help-window/on-key app (:key event))
                    (= :buffers window)           (buffers-window/on-key app now (:key event))
                    :else                         app)
@@ -128,5 +129,6 @@
       :move  (when (= :buffers window)
                (-> (buffers-window/on-move app (:x event) (:y event))
                    (hover (:x event) (:y event))))
-      (:text :composition :drag) app
+      :text  (if (= :buffers window) (buffers-window/on-text app now (:text event)) app)
+      (:composition :drag) app
       nil)))

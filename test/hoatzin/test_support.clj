@@ -200,6 +200,8 @@
                                                (or (:settings-error @s)
                                                    (do (swap! s assoc :saved-settings settings) nil)))
                                              :font-families-fn (constantly font-families)
+                                             ;; tags' colours the same each run
+                                             :rand-fn      (constantly 0.55)
                                              :load-mode-data-fn #(swap! s update :data-asked conj [%1 %2])
                                              :save-mode-data-fn
                                              (fn [mode file data]

@@ -72,9 +72,12 @@
 ;;                                         mode, or nil
 ;;   :minor-modes                          the names of the minor modes it
 ;;                                         is in, a set
-;;   :variants :next-variant-id            its variants, by id, and the id the
-;;   :variant-edit                         next is to have, and the one being
-;;                                         typed: see hoatzin.app.variants
+;;   :variants :dims :next-variant-id      its variants, by id, its dim text,
+;;   :variant-edit                         the id the next of either is to
+;;                                         have, and the variant being typed:
+;;                                         see hoatzin.app.variants
+;;   :tag :tag-color                       a short name the buffers window
+;;                                         shows the buffer with, and its colour
 ;;   :caret-shape                          :underline for the caret to be one,
 ;;                                         else nil
 ;;   :insets :inset :next-inset-id         the current buffer's insets, the

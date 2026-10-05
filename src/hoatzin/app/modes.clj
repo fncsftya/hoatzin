@@ -51,8 +51,9 @@
                                       an event, before the text has it; nil
                                       leaves it to the text
     :status     (fn [app] s)          what the status bar says, or nil
-    :draw       (fn [app k0 k1])      draw over the text's visual lines
+    :draw-under (fn [app k0 k1])      draw behind the text's visual lines
                                       [k0, k1)
+    :draw       (fn [app k0 k1])      draw over them
   A minor mode's keys and commands come before the buffer's mode's, and
   one that answers nil leaves the key to the next. The editor's own minor
   modes are hoatzin.app.variants.
@@ -425,11 +426,29 @@
   [app]
   (some #(some-> (:status %) (as-> f (f app))) (minors app)))
 
+(defn draw-under!
+  "Draw what the buffer's minor modes show behind its visual lines [k0,
+  k1)."
+  [app k0 k1]
+  (doseq [m (minors app)]
+    (some-> (:draw-under m) (as-> f (f app k0 k1)))))
+
 (defn draw!
   "Draw what the buffer's minor modes show over its visual lines [k0, k1)."
   [app k0 k1]
   (doseq [m (minors app)]
     (some-> (:draw m) (as-> f (f app k0 k1)))))
+
+(defn major-names
+  "The names `:mode` takes: \"text\", and each mode's but the minor
+  ones', alphabetically."
+  [app]
+  (cons "text" (sort (keep (fn [[n m]] (when-not (minor? m) n)) (:modes app)))))
+
+(defn minor-names
+  "The minor modes' names, alphabetically."
+  [app]
+  (sort (keep (fn [[n m]] (when (minor? m) n)) (:modes app))))
 
 (defn toggle-minor
   "Turn minor mode `name` on in the current buffer, or off; it says
@@ -438,7 +457,7 @@
   are."
   [app name]
   (let [app (assoc app :dirty? true)
-        all (sort (keep (fn [[n m]] (when (minor? m) n)) (:modes app)))]
+        all (minor-names app)]
     (cond
       (str/blank? name)
       (assoc app :message (str "Minor modes: "
@@ -467,8 +486,7 @@
     (cond
       (str/blank? name)
       (assoc app :message (str "Mode " (or (:major-mode app) "text") "; modes: "
-                               (str/join ", " (cons "text" (sort (keep (fn [[n m]] (when-not (minor? m) n))
-                                                                       (:modes app)))))))
+                               (str/join ", " (major-names app))))
 
       (minor? (get (:modes app) name))
       (assoc app :message (str name " is a minor mode: :minor " name " turns it on or off"))

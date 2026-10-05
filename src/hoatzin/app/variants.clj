@@ -9,18 +9,23 @@
             was, and what is typed there is the variant; return keeps it
             and escape gives it up, putting the text back
     n       over a variant, show the next of its wordings in its place
-  A variant shows as up to three dots below the start of its text, one
-  for each of its wordings. Its text may be edited as any other: the
-  wording it shows becomes what is there.
+    d       dim the selection, or, if it is all dim, undim it; with none,
+            undim the dim text the caret is over
+  A variant shows behind a tint of the accent colour, as long as its
+  text, and with up to three dots below its start, one for each of its
+  wordings. Its text may be edited as any other: the wording it shows
+  becomes what is there. Dim text shows at 60% of its opacity.
 
   Each variant is a pair of marks in the buffer's text (see
   hoatzin.lib.editor), at its start and end, and in :variants, by id,
-  {:options [s ...] :selected i}: its wordings, and the one shown. They
-  are of the buffer's own text, not its insets'.
+  {:options [s ...] :selected i}: its wordings, and the one shown. Each
+  stretch of dim text is a pair of marks too, its id in :dims. They are
+  of the buffer's own text, not its insets'.
 
   They are kept beside the file they are of, as EDN, written as the file
-  is: {:variants [{:start i :end j :options [s ...] :selected k} ...]},
-  :start and :end positions in the buffer's text, in
+  is: {:variants [{:start i :end j :options [s ...] :selected k} ...]
+  :dims [{:start i :end j} ...]}, :start and :end positions in the
+  buffer's text, in
   modes/variants/<file> in the hoatzin config directory, <file> the
   file's absolute path with each / a -, and .edn after it. As a buffer
   visits its file, they are asked of the host, which reads them on a
@@ -39,6 +44,10 @@
 
 (def ^:private mode-name "variants")
 (def ^:private most-dots "The most dots a variant shows." 3)
+(def ^:private tint-alpha "How opaque a variant's tint is, of 255." 51)
+(def ^:private dim-alpha
+  "How opaque the background drawn over dim text is, of 255: what leaves
+  the text at 60% of its opacity." 102)
 
 (defn- message [app s] (assoc app :message s :dirty? true))
 
@@ -69,6 +78,66 @@
     (-> level
         (update :doc #(reduce unmark % gone))
         (update :variants #(apply dissoc % gone)))))
+
+;; ---------------------------------------------------------------- dim text
+
+(defn- dim-start [id] [:dim id :start])
+(defn- dim-end [id] [:dim id :end])
+
+(defn- dim-spans
+  "The stretches of `level`'s dim text, as [start end], in order down it
+  and apart: those whose text is gone left out, and those that meet or
+  overlap as one."
+  [level]
+  (let [marks (get-in level [:doc :marks])]
+    (->> (:dims level)
+         (keep (fn [id]
+                 (let [s (get marks (dim-start id)), e (get marks (dim-end id))]
+                   (when (and s e (< s e)) [s e]))))
+         sort
+         (reduce (fn [out [s e]]
+                   (let [[ps pe] (peek out)]
+                     (if (and pe (<= s pe)) (conj (pop out) [ps (max pe e)]) (conj out [s e]))))
+                 []))))
+
+(defn- with-dims
+  "`level` with `spans`, [start end] apart, as its dim text."
+  [level spans]
+  (let [doc (reduce #(-> %1 (ed/unmark (dim-start %2)) (ed/unmark (dim-end %2))) (:doc level) (:dims level))
+        id0 (:next-variant-id level 0)
+        ids (range id0 (+ id0 (count spans)))]
+    (assoc level
+           :doc (reduce (fn [d [id [s e]]] (-> d (ed/mark (dim-start id) s) (ed/mark (dim-end id) e)))
+                        doc (map vector ids spans))
+           :dims (set ids)
+           :next-variant-id (+ id0 (count spans)))))
+
+(defn- without
+  "`spans` less [lo hi]."
+  [spans [lo hi]]
+  (mapcat (fn [[s e]]
+            (cond-> []
+              (< s (min e lo)) (conj [s (min e lo)])
+              (< (max s hi) e) (conj [(max s hi) e])))
+          spans))
+
+(defn- dim
+  "Dim the selection, or undim it if it is all dim already; with none,
+  undim the stretch of dim text the caret is over."
+  [app _]
+  (if (:inset app)
+    (message app "Only the buffer's own text can be dim")
+    (let [{:keys [caret] :as doc} (:doc app)
+          spans (dim-spans app)
+          sel   (ed/selection doc)
+          [lo hi] sel
+          dimmed (when sel (some (fn [[s e]] (when (and (<= s lo) (<= hi e)) [s e])) spans))
+          under  (some (fn [[s e]] (when (and (<= s caret) (< caret e)) [s e])) spans)]
+      (cond
+        dimmed  (message (with-dims app (without spans sel)) "Undimmed")
+        sel     (message (with-dims app (concat spans [sel])) "Dimmed")
+        under   (message (with-dims app (without spans under)) "Undimmed")
+        :else   (message app "Select the text to dim")))))
 
 (defn- over
   "The variant the caret is over, as [id [start end]], or nil. Only the
@@ -243,35 +312,50 @@
   [app]
   (if-let [path (:path app)]
     (let [app   (with-synced app)
-          data  (when-let [vs (seq (live app))]
+          vs    (live app)
+          ds    (dim-spans app)
+          data  (when (or (seq vs) (seq ds))
                   {:variants (mapv (fn [[id [s e]]]
                                      (let [{:keys [options selected]} (get-in app [:variants id])]
                                        {:start s :end e :options options :selected selected}))
-                                   vs)})
+                                   vs)
+                   :dims (mapv (fn [[s e]] {:start s :end e}) ds)})
           error ((:save-mode-data-fn app) mode-name (file-for path) data)]
       (cond-> app error (message (str (:message app) "; can't write variants: " error))))
     app))
+
+(declare span?)
 
 (defn- variant?
   "Whether `v`, as read, is a variant of text `t`, showing what `t` has
   there."
   [t {:keys [start end options selected] :as v}]
-  (and (map? v) (integer? start) (integer? end) (<= 0 start) (< start end) (<= end (count t))
+  (and (span? (count t) v)
        (vector? options) (>= (count options) 2) (every? string? options)
        (= (count options) (count (set options)))
        (integer? selected) (< -1 selected (count options))
        (= (get options selected) (text/slice t start end))))
 
+(defn- span?
+  "Whether `x`, as read, is {:start :end} of a stretch of a text `n`
+  long."
+  [n {:keys [start end] :as x}]
+  (and (map? x) (integer? start) (integer? end) (<= 0 start) (< start end) (<= end n)))
+
 (defn- load-into
-  "`level`, a buffer, with the variants of `data`, as read, unless it
-  has its own already: each that isn't one of its text, or overlaps one
-  before it, is left out."
+  "`level`, a buffer, with the variants and dim text of `data`, as read,
+  unless it has its own of either already: each variant that isn't one
+  of its text, or overlaps one before it, is left out, as is each dim
+  stretch not in it."
   [level data]
   (let [level (pruned level)
-        vs    (when (map? data) (:variants data))]
-    (if (or (seq (:variants level)) (not (sequential? vs)))
+        vs    (when (map? data) (:variants data))
+        ds    (when (map? data) (:dims data))
+        t     (get-in level [:doc :text])]
+    (if (or (seq (:variants level)) (seq (dim-spans level)) (not (map? data)))
       level
-      (let [t (get-in level [:doc :text])]
+      (as-> level l
+        (with-dims l (if (sequential? ds) (map (juxt :start :end) (filter #(span? (count t) %) ds)) []))
         (reduce (fn [l {:keys [start end options selected] :as v}]
                   (if (and (variant? t v)
                            (not-any? (fn [[_ [s e]]] (and (< s end) (< start e))) (live l)))
@@ -281,7 +365,7 @@
                           (assoc-in [:variants id] {:options options :selected selected})
                           (assoc :next-variant-id (inc id))))
                     l))
-                level vs)))))
+                l (if (sequential? vs) vs []))))))
 
 (defn- loaded
   "The variants the host read, as a :mode-data event has them, given to
@@ -306,10 +390,35 @@
 
 ;; ---------------------------------------------------------------- drawing
 
-(defn- draw!
-  "Below the start of each variant on visual lines [k0, k1), a dot for
-  each of its wordings, up to `most-dots`."
+(defn- shade!
+  "Fill the stretches `spans` of the text, [start end], over visual lines
+  [k0, k1), across each line they are on, in colour `rgb` at `alpha`."
+  [app spans k0 k1 [r g b] alpha]
+  (let [{:keys [renderer layout scroll scratch]} app
+        lh (layout/line-height layout)
+        [ox oy] (geo/origin app)]
+    (sdl/set-render-draw-blend-mode renderer sdl/BLENDMODE-BLEND)
+    (sdl/set-render-draw-color renderer r g b alpha)
+    (doseq [[s e] spans
+            [k x0 x1] (layout/range-segments layout (display/shown-pos app s) (display/shown-pos app e) k0 k1)
+            :let [x0 (long (Math/floor x0))]]
+      (sdl/render-fill-rect renderer
+                            (sdl/set-frect! (:frect scratch) (+ ox x0) (+ oy (- (geo/line-top app k) scroll))
+                                            (- (long (Math/ceil x1)) x0) lh)))
+    (sdl/set-render-draw-blend-mode renderer sdl/BLENDMODE-NONE)))
+
+(defn- draw-under!
+  "Behind each variant's text on visual lines [k0, k1), a tint of the
+  accent colour."
   [app k0 k1]
+  (shade! app (map second (live app)) k0 k1 (:ui-accent app) tint-alpha))
+
+(defn- draw!
+  "Over dim text on visual lines [k0, k1), the background, part opaque;
+  below the start of each variant there, a dot for each of its wordings,
+  up to `most-dots`."
+  [app k0 k1]
+  (shade! app (dim-spans app) k0 k1 (:background app) dim-alpha)
   (when-not (:composition app)
     (let [{:keys [renderer layout scroll scratch]} app
           {:keys [baseline]} (:metrics layout)
@@ -333,14 +442,17 @@
    :minor?   true
    :default? true
    :normal   {"v" start-adding
-              "n" next-variant}
+              "n" next-variant
+              "d" dim}
    :opened   opened
    :written  written
    :loaded   loaded
    :on-event on-event
    :status   (fn [app] (when (:variant-edit app) "Variant: return keeps, esc cancels"))
+   :draw-under draw-under!
    :draw     draw!
    :help     [["Variants"
                [["v" "add a variant of the selection, or the variant"]
                 ["return / esc" "keep the variant typed / give it up"]
-                ["n" "show the variant's next wording"]]]]})
+                ["n" "show the variant's next wording"]
+                ["d" "dim the selection, or undim it"]]]]})

@@ -207,8 +207,17 @@
     (t/send! s {:type :opened :path "/fish/notes.txt" :text "Bream."})
     (t/command! s "new")
     (t/command! s "buffers")
+    (t/type! s "t")
+    (t/type! s "draft")
+    (t/press! s sdl/K-RETURN)
     (t/press! s sdl/K-UP)
-    (t/matches-golden? "buffers" (t/render! s))))
+    (t/type! s "t")
+    (t/type! s "fis")
+    (t/matches-golden? "buffers" (t/render! s))
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-UP)
+    (t/type! s "p")
+    (t/matches-golden? "buffers-preview" (t/render! s))))
 
 (deftest ^:integration settings
   ;; the settings window over the text, inset by the margin
@@ -398,10 +407,22 @@
     (t/send! s {:type :mode-data :mode "variants" :file "-birds-hoatzin.txt.edn"
                 :data {:variants [{:start 4 :end 11 :options ["hoatzin" "stinkbird" "canje pheasant"]
                                    :selected 0}
-                                  {:start 17 :end 23 :options ["smelly" "stinky"] :selected 1}]}})
+                                  {:start 17 :end 23 :options ["smelly" "stinky"] :selected 1}]
+                       :dims [{:start 24 :end 28}]}})
     (t/press! s sdl/K-ESCAPE)
     (t/matches-golden? "variants" (t/render! s))
     (t/press! s sdl/K-RIGHT cmd)
     (t/type! s "w")
     (t/type! s "vbro")
     (t/matches-golden? "variant-typed" (t/render! s))))
+
+(deftest ^:integration a-variant-across-lines
+  ;; a long variant, tinted across each line it wraps onto
+  (with-session [s :height 200]
+    (t/send! s {:type :opened :path "/birds/hoatzin.txt" :text hoatzin-text})
+    (t/send! s {:type :mode-data :mode "variants" :file "-birds-hoatzin.txt.edn"
+                :data {:variants [{:start 44 :end 112
+                                   :options [(subs hoatzin-text 44 112) "found in South America"]
+                                   :selected 0}]}})
+    (t/press! s sdl/K-ESCAPE)
+    (t/matches-golden? "variant-across-lines" (t/render! s))))

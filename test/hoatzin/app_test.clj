@@ -1155,6 +1155,125 @@
     (is (nil? (:window (t/app s))) "escape closes it")
     (is (= "scratch" (buffers/buffer-name (t/app s))) "and stays put")))
 
+(deftest the-buffers-window-closes-buffers
+  (with-session [s :mode :normal]
+    (open! s "/birds/a.txt" "alpha")
+    (open! s "/birds/b.txt" "beta")
+    (t/command! s "buffers")
+    (t/type! s "k")
+    (is (= ["scratch" "a.txt"] (buffer-names s)) "k closes the buffer it is on, saved, straight away")
+    (is (= :buffers (:window (t/app s))) "the window staying open")
+    (is (= 1 (:buffers-active (t/app s))) "on the one in its place")
+    (is (= "alpha" (t/text s)) "the buffer before it shown in its place")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s "A")
+    (t/type! s "!")
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "buffers")
+    (t/type! s "k")
+    (is (= "Close \"a.txt\", with unsaved changes? (y/n)" (:prompt (:confirm (t/app s))))
+        "with unsaved changes, once asked")
+    (t/type! s "n")
+    (is (= ["scratch" "a.txt"] (buffer-names s)))
+    (t/type! s "k")
+    (t/type! s "y")
+    (is (= ["scratch"] (buffer-names s)))
+    (t/type! s "k")
+    (is (= ["scratch"] (buffer-names s)) "the scratch buffer, with no file, without asking")
+    (is (= 3 (:buffer-id (t/app s))) "a new one in its place"))
+  (testing "a buffer with no file, once asked"
+    (with-session [s :mode :normal]
+      (t/command! s "new")
+      (t/command! s "buffers")
+      (t/type! s "k")
+      (is (= "Close \"untitled\", which has no file? (y/n)" (:prompt (:confirm (t/app s)))))
+      (t/type! s "y")
+      (is (= ["scratch"] (buffer-names s)))
+      (testing "and the one it is on need not be the current one"
+        (t/press! s sdl/K-ESCAPE)
+        (t/command! s "new")
+        (open! s "/birds/a.txt" "alpha")
+        (t/command! s "buffers")
+        (t/press! s sdl/K-UP)
+        (t/type! s "k")
+        (t/type! s "y")
+        (is (= ["scratch" "a.txt"] (buffer-names s)))
+        (is (= "alpha" (t/text s)) "the current one stays shown")))))
+
+(defn- row-texts
+  "The texts of the labels in the buffers window's row for buffer `i`."
+  [s i]
+  (let [row (some #(when (= i (get-in % [:node :buffer-row])) (:node %)) (:float-places (t/app s)))]
+    (mapv :text (:children row))))
+
+(deftest the-buffers-window-shows-unsaved-buffers
+  (with-session [s :mode :normal :dir "/home"]
+    (open! s "/birds/a.txt" "alpha")
+    (t/command! s "buffers")
+    (is (= ["" "scratch" "*unsaved*"] (row-texts s 0)) "not the working directory")
+    (is (= ["•" "a.txt" "/birds/a.txt"] (row-texts s 1)))))
+
+(deftest the-buffers-window-previews
+  (with-session [s :mode :normal]
+    (open! s "/birds/a.txt" "alpha\nbeta")
+    (t/command! s "buffers")
+    (t/press! s sdl/K-UP)
+    (t/type! s "p")
+    (is (= 0 (:buffers-preview (t/app s))))
+    (let [texts (set (keep #(get-in % [:node :text]) (:float-places (t/app s))))]
+      (is (contains? texts "Preview: scratch"))
+      (is (contains? texts "(empty)")))
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "k")
+    (is (= 0 (:buffers-active (t/app s))) "the keys wait")
+    (is (= ["scratch" "a.txt"] (buffer-names s)))
+    (t/press! s sdl/K-ESCAPE)
+    (is (nil? (:buffers-preview (t/app s))) "escape ends it")
+    (is (= :buffers (:window (t/app s))) "and leaves the window open")
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "p")
+    (let [texts (set (keep #(get-in % [:node :text]) (:float-places (t/app s))))]
+      (is (contains? texts "alpha"))
+      (is (contains? texts "beta")))))
+
+(deftest the-buffers-window-tags
+  (with-session [s :mode :normal]
+    (open! s "/birds/a.txt" "alpha")
+    (t/command! s "buffers")
+    (t/type! s "t")
+    (t/type! s "todo")
+    (is (= ["•" "a.txt" "/birds/a.txt" "todo|"] (row-texts s 1)) "typed in the row")
+    (t/press! s sdl/K-BACKSPACE)
+    (t/press! s sdl/K-UP)
+    (is (= 1 (:buffers-active (t/app s))) "the window stays on it")
+    (t/press! s sdl/K-RETURN)
+    (is (= ["•" "a.txt" "/birds/a.txt" "tod"] (row-texts s 1)))
+    (is (= :buffers (:window (t/app s))) "return keeps it")
+    (is (= "tod" (:tag (t/app s))))
+    (let [[r g b] (:tag-color (t/app s))]
+      (is (every? #(< 150 % 256) [r g b]) "in a pastel colour"))
+    (t/type! s "t")
+    (t/type! s "x")
+    (t/press! s sdl/K-ESCAPE)
+    (is (= "tod" (:tag (t/app s))) "escape gives it up")
+    (is (= :buffers (:window (t/app s))))
+    (t/type! s "t")
+    (t/type! s "done")
+    (t/press! s sdl/K-RETURN)
+    (is (= "done" (:tag (t/app s))) "t again overwrites it")
+    (t/type! s "t")
+    (t/type! s "a very long tag indeed")
+    (t/press! s sdl/K-RETURN)
+    (is (= "a very long tag" (:tag (t/app s))) "a short one")
+    (t/press! s sdl/K-UP)
+    (t/type! s "tbird")
+    (t/press! s sdl/K-RETURN)
+    (is (= "bird" (:tag (first (buffers/listing (t/app s))))) "a buffer not shown is tagged too")
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "t")
+    (t/press! s sdl/K-RETURN)
+    (is (nil? (:tag (t/app s))) "with nothing typed, the tag goes")))
+
 (deftest the-buffers-window-scrolls
   (with-session [s :mode :normal :height 200]
     (dotimes [i 20] (open! s (str "/birds/" i ".txt") ""))
@@ -1232,10 +1351,27 @@
     (is (= "auk" (:major-mode (t/app s))) "and stays in the one it was in")
     (t/command! s "mode text")
     (is (nil? (:major-mode (t/app s))))
-    (testing "tab leaves the argument alone"
+    (testing "tab completes the mode's name"
       (t/type! s ":mode a")
       (t/press! s sdl/K-TAB)
-      (is (= "mode a" (:command (t/app s))))
+      (is (= "mode auk" (:command (t/app s))))
+      (t/press! s sdl/K-RETURN)
+      (is (= "auk" (:major-mode (t/app s))))
+      (t/type! s ":mo t")
+      (t/press! s sdl/K-TAB)
+      (is (= "mo text" (:command (t/app s))) "after a command's prefix too")
+      (t/press! s sdl/K-ESCAPE)
+      (t/type! s ":mode x")
+      (t/press! s sdl/K-TAB)
+      (is (= "mode x" (:command (t/app s))) "a name no mode's begins stays as it is")
+      (t/press! s sdl/K-ESCAPE)
+      (t/type! s ":minor ")
+      (t/press! s sdl/K-TAB)
+      (is (= "minor variants" (:command (t/app s))) "and the minor modes' for :minor")
+      (t/press! s sdl/K-ESCAPE)
+      (t/type! s ":open fo")
+      (t/press! s sdl/K-TAB)
+      (is (= "open fo" (:command (t/app s))) "a command taking anything leaves it alone")
       (t/press! s sdl/K-ESCAPE))))
 
 (deftest a-buffer-saved-as-an-auk-file-is-written-in-auk-mode
@@ -1377,20 +1513,20 @@
     (auk! s {:content ["one" "two"]})
     (t/press! s sdl/K-S cmd)
     (is (= [[0 ""]] (sections s)) "below the line the caret is in")
-    (is (= "one\n\ntwo" (t/text s)) "with a new line after it")
+    (is (= "one\ntwo" (t/text s)) "with no new line after it: there is a line there already")
     (is (= "" (in-section s)) "and the caret in it")
     (is (= :normal (:mode (t/app s))) "still in normal mode")
     (is (:modified? (t/app s)))
     (t/type! s "i")
     (t/type! s "a note")
     (is (= "a note" (in-section s)) "typing goes into the section")
-    (is (= "one\n\ntwo" (t/text s)) "and leaves the text alone")
+    (is (= "one\ntwo" (t/text s)) "and leaves the text alone")
     (t/press! s sdl/K-ESCAPE)
     (t/press! s sdl/K-S cmd)
     (is (= [[0 "a note\n" [[0 ""]]]] (sections s)) "in a section, a new one goes in it")
     (is (= "" (in-section s)) "with the caret in that")
     (t/command! s "w")
-    (is (= (str "{:content\n [\"one\"\n  {:type :section :ref 1}\n  \"\"\n  \"two\"]\n"
+    (is (= (str "{:content\n [\"one\"\n  {:type :section :ref 1}\n  \"two\"]\n"
                 " :sections\n [{:id 1 :content [\"a note\" {:type :section :ref 2} \"\"]}\n"
                 "  {:id 2 :content [\"\"]}]}\n")
            (get-in @s [:files "/notes/n.auk"])))
@@ -1399,6 +1535,12 @@
       (t/command! s "mode text")
       (t/press! s sdl/K-S cmd)
       (is (= [[0 "a note\n" [[0 ""]]]] (sections s))))))
+
+(deftest a-section-on-the-last-line-makes-a-line-after-it
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one"]})
+    (t/press! s sdl/K-S cmd)
+    (is (= "one\n" (t/text s)) "a new line to go on writing in")))
 
 (deftest the-line-after-a-section-is-where-the-next-goes
   (with-session [s :mode :normal]
@@ -1763,7 +1905,7 @@
     (t/type! s "l")
     (is (= [[0 ""]] (sections s)) "below the line")
     (is (= :list (:kind (insets/innermost (t/app s)))))
-    (is (= "one\n\ntwo" (t/text s)) "with a new line after it")
+    (is (= "one\ntwo" (t/text s)) "with no new line after it: there is a line there already")
     (is (= :normal (:mode (t/app s))) "still in normal mode")
     (t/type! s "i")
     (t/type! s "eggs")
@@ -1773,7 +1915,7 @@
     (is (= "eggs\nleaves" (in-section s)) "each line an item")
     (t/command! s "w")
     (is (= (str "{:content\n [\"one\"\n  {:type :list :content [{:text \"eggs\"} {:text \"leaves\"}]}\n"
-                "  \"\"\n  \"two\"]}\n")
+                "  \"two\"]}\n")
            (get-in @s [:files "/notes/n.auk"])))
     (testing "reads back as it was"
       (open! s "/notes/copy.auk" (get-in @s [:files "/notes/n.auk"]))
@@ -1844,7 +1986,7 @@
     (t/type! s "l")
     (is (= [0 0] (insets/path (t/app s))) "a list in a section")
     (t/press! s sdl/K-S cmd)
-    (is (= [[0 "a\n\n" [[0 "" ] [0 ""]]]] (sections s)) "cmd+s in it adds a section after it, in the section")
+    (is (= [[0 "a\n" [[0 "" ] [0 ""]]]] (sections s)) "cmd+s in it adds a section after it, in the section")
     (is (= [:list :section] (map #(:kind % :section) (:insets (first (insets/snapshot (t/app s))))))
         "in that order")
     (t/press! s sdl/K-UP)
@@ -2139,7 +2281,10 @@
     (t/press! s sdl/K-ESCAPE)
     (is (nil? (hints s)) "gone with the command line")
     (t/type! s ":mode a")
-    (is (nil? (hints s)) "none once the command has an argument")
+    (is (= [["auk"]] (hints s)) "once the command has an argument, the arguments it could be")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s ":open a")
+    (is (nil? (hints s)) "none for an argument that could be anything")
     (t/press! s sdl/K-ESCAPE))
   (testing "in two rows, down then across, when they don't fit on one"
     (with-session [s :mode nil :width 220]
@@ -2963,7 +3108,7 @@
     (t/command! s "w")
     (is (= "a testing word\n" (get-in @s [:files "/birds/a.txt"])))
     (is (= {["variants" "-birds-a.txt.edn"]
-            {:variants [{:start 2 :end 9 :options ["testing" "tested"] :selected 0}]}}
+            {:variants [{:start 2 :end 9 :options ["testing" "tested"] :selected 0}] :dims []}}
            (:mode-data @s)))
     (t/command! s "close")
     (t/send! s {:type :opened :path "/birds/a.txt" :text (get-in @s [:files "/birds/a.txt"])})
@@ -3022,6 +3167,42 @@
     (t/command! s "mode variants")
     (is (= "variants is a minor mode: :minor variants turns it on or off" (:message (t/app s))))
     (is (nil? (:major-mode (t/app s))))))
+
+(deftest d-dims-the-selection
+  (with-session [s]
+    (variant-file! s "/birds/a.txt" "a testing word")
+    (select-word-at! s 2)
+    (t/type! s "d")
+    (is (= "Dimmed" (:message (t/app s))))
+    (is (= "testing" (t/selected s)) "the selection stays")
+    (t/press! s sdl/K-ESCAPE)
+    (select-word-at! s 10)
+    (t/type! s "d")
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "w")
+    (is (= [{:start 2 :end 9} {:start 10 :end 14}]
+           (get-in @s [:mode-data ["variants" "-birds-a.txt.edn"] :dims]))
+        "kept beside the file")
+    (select-word-at! s 2)
+    (t/type! s "d")
+    (is (= "Undimmed" (:message (t/app s))) "all dim already, undimmed")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-UP cmd)
+    (t/type! s "d")
+    (is (= "Select the text to dim" (:message (t/app s))))
+    (dotimes [_ 11] (t/press! s sdl/K-RIGHT))
+    (t/type! s "d")
+    (is (= "Undimmed" (:message (t/app s))) "with no selection, what the caret is over")
+    (t/command! s "w")
+    (is (= {} (:mode-data @s)) "none left to keep")
+    (testing "read back"
+      (swap! s assoc-in [:mode-data ["variants" "-birds-b.txt.edn"]]
+             {:variants [] :dims [{:start 0 :end 1} {:start 3 :end 99}]})
+      (variant-file! s "/birds/b.txt" "abcdef")
+      (t/data-read! s "variants" "-birds-b.txt.edn")
+      (t/command! s "w")
+      (is (= [{:start 0 :end 1}] (get-in @s [:mode-data ["variants" "-birds-b.txt.edn"] :dims]))
+          "but not what is past the text's end"))))
 
 (deftest variants-keep-out-of-insets
   (with-session [s :mode :normal]
