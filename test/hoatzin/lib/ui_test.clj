@@ -1,6 +1,6 @@
-(ns hoatzin.ui-test
+(ns hoatzin.lib.ui-test
   (:require [clojure.test :refer [deftest is testing]]
-            [hoatzin.ui :as ui]))
+            [hoatzin.lib.ui :as ui]))
 
 ;; Text 7 px a character and 10 px high, at 1 px a point.
 (def ctx {:scale 1.0 :text-size (fn [s] [(* 7 (count s)) 10])})

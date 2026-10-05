@@ -26,8 +26,8 @@
   that of the profiled functions it calls."
   (:require [clojure.string :as str]
             [hoatzin.app :as app]
-            [hoatzin.editor :as ed]
-            [hoatzin.sdl :as sdl]
+            [hoatzin.lib.editor :as ed]
+            [hoatzin.lib.sdl :as sdl]
             [hoatzin.test-support :as t]
             [jolt.ffi :as ffi]))
 
@@ -63,19 +63,19 @@
 (def ^:private profiled
   "The functions --profile times, by name; any that no longer exist are
   skipped."
-  '[hoatzin.app/handle hoatzin.app/settle hoatzin.app/sync-view hoatzin.app/draw!
-    hoatzin.app/normalize-newlines
-    hoatzin.editor/insert hoatzin.editor/delete hoatzin.editor/word-range
-    hoatzin.text/of hoatzin.text/replace hoatzin.text/lines hoatzin.text/changed-lines
-    hoatzin.tree/build hoatzin.tree/splice
-    hoatzin.layout/layout hoatzin.layout/paragraphs-of hoatzin.layout/rewrap
-    hoatzin.layout/edit-range hoatzin.layout/trim!
-    hoatzin.layout/caret hoatzin.layout/position-at hoatzin.layout/selection-segments
-    hoatzin.layout/prev-position hoatzin.layout/next-position
-    hoatzin.coretext/wrap hoatzin.coretext/rewrap hoatzin.coretext/make-line
-    hoatzin.coretext/rasterize-line
-    hoatzin.textures/fetch! hoatzin.textures/end-frame!
-    hoatzin.sdl/create-texture hoatzin.sdl/update-texture hoatzin.sdl/destroy-texture])
+  '[hoatzin.app/handle hoatzin.app/settle hoatzin.app.sync/sync-view hoatzin.app/draw!
+    hoatzin.lib.text/normalize-newlines
+    hoatzin.lib.editor/insert hoatzin.lib.editor/delete hoatzin.lib.editor/word-range
+    hoatzin.lib.text/of hoatzin.lib.text/replace hoatzin.lib.text/lines hoatzin.lib.text/changed-lines
+    hoatzin.lib.tree/build hoatzin.lib.tree/splice
+    hoatzin.lib.layout/layout hoatzin.lib.layout/paragraphs-of hoatzin.lib.layout/rewrap
+    hoatzin.lib.layout/edit-range hoatzin.lib.layout/trim!
+    hoatzin.lib.layout/caret hoatzin.lib.layout/position-at hoatzin.lib.layout/selection-segments
+    hoatzin.lib.layout/prev-position hoatzin.lib.layout/next-position
+    hoatzin.lib.coretext/wrap hoatzin.lib.coretext/rewrap hoatzin.lib.coretext/make-line
+    hoatzin.lib.coretext/rasterize-line
+    hoatzin.lib.textures/fetch! hoatzin.lib.textures/end-frame!
+    hoatzin.lib.sdl/create-texture hoatzin.lib.sdl/update-texture hoatzin.lib.sdl/destroy-texture])
 
 (def ^:private profile (atom nil))
 

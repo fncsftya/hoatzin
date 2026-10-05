@@ -1,4 +1,4 @@
-(ns hoatzin.ui
+(ns hoatzin.lib.ui
   "Boxes: graphical elements drawn in the text or above it.
 
   A node is plain data, {:kind k :style {...}} plus what its kind needs:

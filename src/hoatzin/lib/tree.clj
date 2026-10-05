@@ -1,4 +1,4 @@
-(ns hoatzin.tree
+(ns hoatzin.lib.tree
   "A persistent B+-tree of items with summed measures: the shape under both
   the document's text (items are lines) and its layout (items are typeset
   paragraphs).

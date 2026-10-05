@@ -1,7 +1,7 @@
-(ns hoatzin.text-test
+(ns hoatzin.lib.text-test
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [hoatzin.text :as text]))
+            [hoatzin.lib.text :as text]))
 
 (deftest basics
   (let [t (text/of "one\ntwo\n\nfour")]

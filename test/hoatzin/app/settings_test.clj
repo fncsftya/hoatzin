@@ -1,7 +1,7 @@
-(ns hoatzin.settings-test
+(ns hoatzin.app.settings-test
   (:require [babashka.fs :as fs]
             [clojure.test :refer [deftest is testing]]
-            [hoatzin.settings :as settings]))
+            [hoatzin.app.settings :as settings]))
 
 (deftest defaults
   (is (= {:editor-font {:family "Georgia" :size 20} :ui-font {:family "Menlo" :size 13}}

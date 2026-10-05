@@ -2,8 +2,8 @@
   "The desktop host: an SDL window whose events drive hoatzin.app."
   (:require [jolt.ffi :as ffi]
             [hoatzin.app :as app]
-            [hoatzin.sdl :as sdl]
-            [hoatzin.settings :as settings]))
+            [hoatzin.lib.sdl :as sdl]
+            [hoatzin.app.settings :as settings]))
 
 ;; ---------------------------------------------------------------- file dialogs
 
@@ -186,4 +186,8 @@
           (sdl/destroy-renderer renderer)
           (sdl/destroy-window window))))
     (finally
-      (sdl/quit))))
+      (sdl/quit)
+      ;; Laying out a big text wraps it on futures' threads (see
+      ;; hoatzin.lib.layout/paragraphs-of). Once idle, the pool keeps them
+      ;; for a minute, and with them the process, unless it is shut down.
+      (shutdown-agents))))

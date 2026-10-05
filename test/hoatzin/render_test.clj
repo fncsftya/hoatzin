@@ -4,7 +4,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest]]
             [hoatzin.app :as app]
-            [hoatzin.sdl :as sdl]
+            [hoatzin.lib.sdl :as sdl]
             [hoatzin.test-support :as t :refer [with-session]]))
 
 (def cmd sdl/KMOD-GUI)

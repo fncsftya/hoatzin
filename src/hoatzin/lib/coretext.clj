@@ -1,4 +1,4 @@
-(ns hoatzin.coretext
+(ns hoatzin.lib.coretext
   "Text shaping, wrapping and rasterization through CoreText (macOS only).
 
   Lines are drawn into a CoreGraphics bitmap as premultiplied RGBA, in their
@@ -11,7 +11,7 @@
 
   CoreText indexes strings in UTF-16 code units, and every index in this
   namespace is one. Converting to and from Jolt's code-point indices is the
-  caller's job (see hoatzin.layout)."
+  caller's job (see hoatzin.lib.layout)."
   (:require [clojure.string :as str]
             [jolt.ffi :as ffi]))
 

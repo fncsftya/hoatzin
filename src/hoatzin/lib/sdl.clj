@@ -1,4 +1,4 @@
-(ns hoatzin.sdl
+(ns hoatzin.lib.sdl
   "Minimal SDL3 bindings: a window, input events, and textured drawing."
   (:require [jolt.ffi :as ffi]))
 

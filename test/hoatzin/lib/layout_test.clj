@@ -1,12 +1,12 @@
-(ns hoatzin.layout-test
+(ns hoatzin.lib.layout-test
   "Layout against real CoreText. Exact line breaks depend on Georgia's
   metrics, so these assert properties (lines rejoin to the text, fit the
   width, break at spaces) rather than particular break positions."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
-            [hoatzin.coretext :as ct]
-            [hoatzin.layout :as layout]
-            [hoatzin.text :as text]))
+            [hoatzin.lib.coretext :as ct]
+            [hoatzin.lib.layout :as layout]
+            [hoatzin.lib.text :as text]))
 
 (def ^:dynamic *font* nil)
 

@@ -1,4 +1,4 @@
-(ns hoatzin.settings
+(ns hoatzin.app.settings
   "The settings the user can change, and the file they persist in.
 
   Settings are a map:
@@ -16,7 +16,7 @@
   (:require [babashka.fs :as fs]
             [clojure.data.json :as json]
             [clojure.string :as str]
-            [hoatzin.coretext :as ct]))
+            [hoatzin.lib.coretext :as ct]))
 
 (def font-sizes "The font sizes allowed, in points: [min max]." [6 72])
 

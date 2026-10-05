@@ -14,8 +14,8 @@
             [clojure.test :refer [is]]
             [jolt.ffi :as ffi]
             [hoatzin.app :as app]
-            [hoatzin.editor :as ed]
-            [hoatzin.sdl :as sdl]))
+            [hoatzin.lib.editor :as ed]
+            [hoatzin.lib.sdl :as sdl]))
 
 ;; ---------------------------------------------------------------- canvas
 

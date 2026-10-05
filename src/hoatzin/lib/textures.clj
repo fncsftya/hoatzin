@@ -1,4 +1,4 @@
-(ns hoatzin.textures
+(ns hoatzin.lib.textures
   "Rasterized lines as SDL textures, cached by their text.
 
   A line's pixels depend only on its text and the font, not on where it sits
@@ -6,8 +6,8 @@
   only the lines whose content changed, and a resize that merely moves lines
   rasterizes nothing. Clear the cache when the font or colour changes."
   (:require [jolt.ffi :as ffi]
-            [hoatzin.coretext :as ct]
-            [hoatzin.sdl :as sdl]))
+            [hoatzin.lib.coretext :as ct]
+            [hoatzin.lib.sdl :as sdl]))
 
 (def ^:private spare
   "Off-screen textures kept, most recently drawn first, for scrolling back."

@@ -1,7 +1,7 @@
-(ns hoatzin.text
+(ns hoatzin.lib.text
   "The document's text: a persistent rope of lines.
 
-  Text is a hoatzin.tree whose items are the lines, without their newlines.
+  Text is a hoatzin.lib.tree whose items are the lines, without their newlines.
   An edit copies the lines it touches and O(log n) tree nodes; every other
   line stays the same string object, shared with the text it came from. So
   the layout can tell which lines an edit changed by identity, and a large
@@ -13,7 +13,7 @@
   only at the lines they don't share."
   (:refer-clojure :exclude [replace])
   (:require [clojure.string :as str]
-            [hoatzin.tree :as tree]))
+            [hoatzin.lib.tree :as tree]))
 
 ;; A line's :len is its length plus its newline, so a Text's length is its
 ;; root's :len less one: the last line has no newline.
@@ -42,6 +42,14 @@
   (count [this] (dec (tree/len root))))
 
 (defn text? [x] (instance? Text x))
+
+(defn normalize-newlines
+  "String `s` with its \\r\\n and \\r newlines made \\n, as a Text has them."
+  [s]
+  ;; most text has no \r: find that out with a scan that copies nothing
+  (if (str/includes? s "\r")
+    (-> s (str/replace "\r\n" "\n") (str/replace "\r" "\n"))
+    s))
 
 (defn- split-lines
   "`s` cut at its newlines; n newlines make n+1 lines."

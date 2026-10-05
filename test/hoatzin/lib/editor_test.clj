@@ -1,6 +1,6 @@
-(ns hoatzin.editor-test
+(ns hoatzin.lib.editor-test
   (:require [clojure.test :refer [deftest is testing]]
-            [hoatzin.editor :as ed]))
+            [hoatzin.lib.editor :as ed]))
 
 (defn- doc
   "A document, as the tests write them: {:text string :caret i :anchor j}."

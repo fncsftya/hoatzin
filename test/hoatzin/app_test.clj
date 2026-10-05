@@ -4,8 +4,9 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [hoatzin.app :as app]
-            [hoatzin.layout :as layout]
-            [hoatzin.sdl :as sdl]
+            [hoatzin.app.command :as command]
+            [hoatzin.lib.layout :as layout]
+            [hoatzin.lib.sdl :as sdl]
             [hoatzin.test-support :as t :refer [with-session]]))
 
 (def cmd sdl/KMOD-GUI)
@@ -1002,9 +1003,9 @@
       (t/type! s ":")
       (is (= [["open" "quit"] ["save" "settings"]] (hints s)))))
   (testing "no more than two rows: the columns that don't fit are left out"
-    (is (= [["a" "b"] ["c" "d"]] (#'app/hint-columns ["a" "b" "c" "d" "e" "f"] 10 5 25)))
-    (is (= [["a"] ["b"] ["c"]] (#'app/hint-columns ["a" "b" "c"] 10 5 40)))
-    (is (= [["a" "b"]] (#'app/hint-columns ["a" "b" "c"] 10 5 1)) "always one column")))
+    (is (= [["a" "b"] ["c" "d"]] (#'command/hint-columns ["a" "b" "c" "d" "e" "f"] 10 5 25)))
+    (is (= [["a"] ["b"] ["c"]] (#'command/hint-columns ["a" "b" "c"] 10 5 40)))
+    (is (= [["a" "b"]] (#'command/hint-columns ["a" "b" "c"] 10 5 1)) "always one column")))
 
 (defn- settings-box
   "The settings window's placed box, or nil when it is closed."

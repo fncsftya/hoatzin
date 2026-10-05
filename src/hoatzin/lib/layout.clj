@@ -1,22 +1,22 @@
-(ns hoatzin.layout
+(ns hoatzin.lib.layout
   "Document layout: the text's lines as paragraphs, each wrapped by CoreText.
 
   Positions are code-point indices into the document, as Jolt strings count
   them; CoreText's UTF-16 indices stay inside this namespace.
 
-  The paragraphs are the items of a hoatzin.tree, summing each one's length
+  The paragraphs are the items of a hoatzin.lib.tree, summing each one's length
   (with its newline) and its count of visual lines, so finding the paragraph
   at a position or a visual line is O(log n). A layout context (one font and
   wrap width) keeps the last layout it made, and the next one re-wraps only
-  the lines that changed since: see hoatzin.text/changed-lines.
+  the lines that changed since: see hoatzin.lib.text/changed-lines.
 
   A paragraph is plain data, {:text :length :u16 :lines}, its lines just
   where it breaks. The CTLines that measure and draw lines are set only for
   the lines asked about, mostly those on screen, and cached in the context
   by their text until `trim!` finds them unused."
-  (:require [hoatzin.coretext :as ct]
-            [hoatzin.text :as text]
-            [hoatzin.tree :as tree]))
+  (:require [hoatzin.lib.coretext :as ct]
+            [hoatzin.lib.text :as text]
+            [hoatzin.lib.tree :as tree]))
 
 ;; ---------------------------------------------------------------- metrics
 
@@ -103,7 +103,7 @@
 
 (defn- rewrap
   "Paragraph `old` edited to `text`, re-breaking only the lines the edit
-  disturbs (see hoatzin.coretext/rewrap)."
+  disturbs (see hoatzin.lib.coretext/rewrap)."
   [font width old text]
   (let [[p ea eb] (edit-range (:text old) text)
         u16 (when (or (:u16 old) (some astral? (subs text p eb))) (u16-table text))
@@ -116,7 +116,7 @@
 (def ^:private spec {:len #(inc (count (:text %))) :w #(count (:lines %))})
 
 (defn context
-  "A layout context: `font` (from hoatzin.coretext/font) wrapped to `width`
+  "A layout context: `font` (from hoatzin.lib.coretext/font) wrapped to `width`
   px. Release it with `release-context`."
   [font width]
   {:font font :width width :metrics (metrics font) :current (atom nil)
@@ -152,7 +152,7 @@
   (reset! current nil))
 
 (defn layout
-  "Lay out `txt` (a hoatzin.text, or a string) in `ctx`, re-wrapping only
+  "Lay out `txt` (a hoatzin.lib.text, or a string) in `ctx`, re-wrapping only
   the lines that differ from the context's last layout.
 
   Returns {:tree :text :metrics :font :ctlines}; the functions below answer
@@ -229,7 +229,7 @@
 
 (defn- set-line
   "Line `j` of paragraph `p`, ready to measure: {:start :end :text, :line
-  its CTLine and :base its start, as hoatzin.coretext's line functions take
+  its CTLine and :base its start, as hoatzin.lib.coretext's line functions take
   it}. Good until the next `trim!`."
   [L p j]
   (let [{:keys [start] :as ln} (nth (:lines p) j)

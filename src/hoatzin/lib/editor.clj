@@ -1,4 +1,4 @@
-(ns hoatzin.editor
+(ns hoatzin.lib.editor
   "The document being edited: its text, a caret and, while something is
   selected, an :anchor where the selection began. Positions are code-point
   indices. Pure; where characters begin and end is the layout's business.
@@ -10,9 +10,9 @@
   as it is edited: what is inserted before a mark pushes it along, and a
   mark inside text that is deleted lands where the deletion was.
 
-  The text is a hoatzin.text rope, so edits cost the same however long the
+  The text is a hoatzin.lib.text rope, so edits cost the same however long the
   document is."
-  (:require [hoatzin.text :as text]))
+  (:require [hoatzin.lib.text :as text]))
 
 (def empty-doc {:text text/empty-text :caret 0})
 
@@ -87,7 +87,7 @@
 
 (defn word-range
   "The [lo hi] run around the character at index `i` of `text` (a string or
-  a hoatzin.text): non-whitespace (a word), or whitespace if that is what
+  a hoatzin.lib.text): non-whitespace (a word), or whitespace if that is what
   is there. Newlines end both, and a run of newlines is a run of its own."
   [text i]
   (let [t (text/of text)
