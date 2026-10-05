@@ -22,6 +22,8 @@
    :list-glide-ms 45           ; how quickly a dropdown's list scrolls to where it
                                ; is headed: it covers about two thirds of the
                                ; way in this long
+   :scroll-glide-ms 90         ; how quickly the wheel scrolls the text to where it
+                               ; is headed
    :frame-ms    8              ; how often a gliding list moves on
    :type-ahead-ms 1000         ; how long typing into a dropdown's list waits
                                ; for the next letter of the same option's name
@@ -104,6 +106,9 @@
 ;;                                         :id of the interactive one it is
 ;;                                         over, if any
 ;;   :size :scroll                         output size and scroll, in pixels
+;;   :scroll-target :scroll-pos :scroll-at the scroll the wheel is gliding to, the
+;;                                         exact scroll on the way and when it
+;;                                         last moved
 ;;   :focused? :blink-from                 the caret blinks from :blink-from
 ;;   :dirty? :drawn-phase                  redraw needed / caret phase drawn
 ;;   :follow?                              scroll the caret into view

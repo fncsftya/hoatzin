@@ -11,7 +11,8 @@
   (update app :scroll #(max 0 (min % (max-scroll app)))))
 
 (defn scroll-to [app scroll]
-  (-> app (assoc :scroll (long (Math/round (double scroll)))) clamp-scroll (assoc :dirty? true)))
+  (-> app (assoc :scroll (long (Math/round (double scroll))) :scroll-target nil)
+      clamp-scroll (assoc :dirty? true)))
 
 (defn follow-caret
   "Scroll just enough to bring the caret's line into view."
@@ -22,9 +23,10 @@
         top (geo/line-top app k)
         vh (geo/view-height app)
         s  (:scroll app)]
-    (assoc app :scroll (cond (< top s) top
-                             (> (+ top lh) (+ s vh)) (- (+ top lh) vh)
-                             :else s))))
+    (assoc app :scroll-target nil
+           :scroll (cond (< top s) top
+                         (> (+ top lh) (+ s vh)) (- (+ top lh) vh)
+                         :else s))))
 
 ;; ---------------------------------------------------------------- the scroll bar
 
@@ -52,8 +54,31 @@
 
 ;; ---------------------------------------------------------------- input
 
-(defn on-wheel [app dy]
-  (scroll-to app (- (:scroll app) (* dy (:wheel-lines app) (layout/line-height (:layout app))))))
+(defn on-wheel
+  "The wheel moves where the text is headed; `glide` takes it there."
+  [app now dy]
+  (let [from   (or (:scroll-target app) (:scroll app))
+        target (- from (* dy (:wheel-lines app) (layout/line-height (:layout app))))]
+    (assoc app :scroll-target (max 0.0 (min (double target) (double (max-scroll app))))
+           :scroll-at now)))
+
+(defn glide
+  "The text moved on towards where the wheel sent it, as of `now`: the
+  distance left shrinks by e for every :scroll-glide-ms, and it arrives
+  once within a pixel."
+  [app now]
+  (if-let [target (:scroll-target app)]
+    (let [at   (or (:scroll-at app) now)
+          pos  (double (or (:scroll-pos app) (:scroll app)))
+          left (* (- pos target) (Math/exp (- (/ (- now at) (double (:scroll-glide-ms app))))))
+          done (< (Math/abs left) 1.0)
+          pos  (if done target (+ target left))]
+      (cond-> (assoc app :scroll (long (Math/round pos)) :scroll-pos pos :scroll-at now :dirty? true)
+        done (assoc :scroll-target nil :scroll-pos nil)
+        true clamp-scroll))
+    (dissoc app :scroll-pos)))
+
+(defn gliding? [app] (some? (:scroll-target app)))
 
 (defn on-scrollbar-click
   "Grab the thumb, or page towards the click on either side of it."

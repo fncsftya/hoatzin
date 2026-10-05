@@ -115,6 +115,8 @@
     (t/press! s sdl/K-V cmd)
     (t/press! s sdl/K-A cmd)
     (t/send! s {:type :wheel :dy 5})
+    (t/advance! s 2000)
+    (t/send! s {:type :tick})
     (t/send! s {:type :move :x 790.0 :y 300.0})
     (t/matches-golden? "scrolled-selection-and-hovered-scrollbar" (t/render! s))))
 

@@ -172,7 +172,7 @@
                   (boxes/hover (:x event) (:y event)))
       :leave  (-> (scroll/hover app false) (boxes/hover nil nil))
       :tick   (mouse/autoscroll app now)
-      :wheel  (scroll/on-wheel app (:dy event))
+      :wheel  (scroll/on-wheel app now (:dy event))
       :focus  (assoc app :focused? (:focused? event) :blink-from now :dirty? true)
       :opened (files/load-file app now event)
       :save-chosen (files/save-chosen app event)
@@ -196,7 +196,8 @@
         app (if (and (:list app) (nil? (dropdown/place app))) (dropdown/close app) app)
         ;; and a list closes as the window loses the focus
         app (if (and (= :focus (:type event)) (not (:focused? event))) (dropdown/close app) app)
-        app (dropdown/glide app now)]
+        app (dropdown/glide app now)
+        app (scroll/glide app now)]
     (or
       (when (:list app) (dropdown/on-event app now event))
       (when (:focus app) (fields/on-focus-event app now event))
@@ -221,7 +222,8 @@
                 (caret/caret-blinking? app) (conj (- b (mod (- now (:blink-from app)) b)))
                 (mouse/autoscrolling? app)  (conj (:autoscroll-ms app))
                 (:fonts-at app)             (conj (max 0 (- (:fonts-at app) now)))
-                (dropdown/gliding? app)     (conj (:frame-ms app)))]
+                (dropdown/gliding? app)     (conj (:frame-ms app))
+                (scroll/gliding? app)       (conj (:frame-ms app)))]
     (if (seq waits) (reduce min waits) -1)))
 
 (defn pointer

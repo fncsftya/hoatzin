@@ -103,8 +103,7 @@
            :y (ffi/read ev :float sdl/O-motion-y)})
       sdl/EVENT-MOUSE-WHEEL
       {:type :wheel
-       :dy (* (ffi/read ev :float sdl/O-wheel-y)
-              (if (= sdl/MOUSEWHEEL-FLIPPED (ffi/read ev :uint sdl/O-wheel-direction)) -1 1))}
+       :dy (ffi/read ev :float sdl/O-wheel-y)}
       sdl/EVENT-WINDOW-FOCUS-GAINED {:type :focus :focused? true}
       sdl/EVENT-WINDOW-FOCUS-LOST   {:type :focus :focused? false}
       sdl/EVENT-WINDOW-EXPOSED      {:type :expose}
