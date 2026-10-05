@@ -415,24 +415,25 @@
 
 (defn- draw!
   "Over dim text on visual lines [k0, k1), the background, part opaque;
-  below the start of each variant there, a dot for each of its wordings,
-  up to `most-dots`."
+  on the bottom edge of the tint at the start of each variant there, a
+  dot for each of its wordings, up to `most-dots`: inside the tint, so
+  the tails of letters like `g` don't reach them."
   [app k0 k1]
   (shade! app (dim-spans app) k0 k1 (:background app) dim-alpha)
   (when-not (:composition app)
     (let [{:keys [renderer layout scroll scratch]} app
-          {:keys [baseline]} (:metrics layout)
+          lh    (layout/line-height layout)
           [ox oy] (geo/origin app)
           side  (max 1 (px app 2))
           gap   (max 1 (px app 2))
-          below (max 1 (px app 3))
+          inset (max 1 (px app 2))
           [r g b] (:ui-accent app)]
       (sdl/set-render-draw-color renderer r g b 255)
       (doseq [[id [s _]] (live app)
               :let [[x k] (layout/caret layout (display/shown-pos app s))]
               :when (and (<= k0 k) (< k k1))]
-        (let [x (+ ox (long (Math/floor x)))
-              y (+ oy (- (geo/line-top app k) scroll) baseline below)]
+        (let [x (+ ox (long (Math/floor x)) inset)
+              y (+ oy (- (geo/line-top app k) scroll) (- lh side))]
           (dotimes [i (min most-dots (count (get-in app [:variants id :options])))]
             (sdl/render-fill-rect renderer
                                   (sdl/set-frect! (:frect scratch) (+ x (* i (+ side gap))) y side side))))))))

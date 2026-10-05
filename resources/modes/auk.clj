@@ -8,7 +8,8 @@
                 {:type :section :ref 1}
                 {:type :list :content [{:text \"An item\"} {:text \"Another\"}]}
                 {:type :checklist :content [{:text \"Done\" :checked? true}
-                                            {:text \"To do\" :checked? false}]}]
+                                            {:text \"To do\" :checked? false}]}
+                {:type :hr}]
      :sections [{:id 1 :title \"Named\"
                  :content [\"A section: text of its own, in a box.\"
                            {:type :section :ref 2}]}
@@ -20,26 +21,36 @@
   it has one, and folds and unfolds it. A section's :content is as the
   file's is, so sections hold sections; each is referred to once. A list
   or checklist is an inset too, its items each a line of its text, shown
-  with a bullet or a box, ticked or not.
+  with a bullet or a box, ticked or not; and so is a horizontal rule, a
+  line across the text, as HTML's <hr>.
 
   In normal mode:
     cmd+s       a section below the line the caret is in, in the text it
                 is in, with a new line after it, and the caret in it
-    cmd+shift+k delete the section or list the caret is in, once asked
+    cmd+shift+k delete the section, list or rule the caret is in or over,
+                once asked
                 (cmd+k deletes the line, as the editor does)
     space       fold the section the caret is in, leaving the caret over
                 it; over a folded one, unfold it and go in
     cmd+r       rename the section the caret is in, or over
     l, ctrl+l   a list, or a checklist, as cmd+s makes a section; in a
                 list, a sublist below the item the caret is in
+    h           a horizontal rule, as cmd+s makes a section, the caret
+                going to the line after it
     t           tick, or untick, the checklist item the caret is in
+    cmd+shift+o a new line above the section or list the caret is in,
+                or over, or before, in the text that holds it, as shift+o
+                makes one above the line the caret is in; nothing is
+                different on a line that is in neither
     k           delete forwards, as the editor does, but not a section
     tab         in a list, indent the item, then take it out to the list
                 holding its list, then put it back where it was
   and in insert mode, cmd+l and cmd+ctrl+l make a list and a checklist,
   tab is as in normal mode, return on an empty last item of a list leaves
-  it for a new line after it, and shift+return leaves every list the
-  caret is in. On an empty line, a section or list takes its place, the
+  it for a new line after it, and in either mode shift+return leaves every
+  list the caret is in, or else the section, for a new line after it, in
+  the text that holds it, and goes on in insert mode. Backspace at the start
+  of a line below a section or list moves the line up into it. On an empty line, a section or list takes its place, the
   line after it. A click on a checklist's box ticks it, or unticks it.
 
   A file with anything else in it is refused rather than read, so that
@@ -54,6 +65,8 @@
 
 (defn- section-ref? [x]
   (and (map? x) (= #{:type :ref} (set (keys x))) (= :section (:type x))))
+
+(defn- rule? [x] (= {:type :hr} x))
 
 (declare list-part?)
 
@@ -77,9 +90,10 @@
 (defn- check-content
   "`content`, a :content vector, as `where` has it; else refuse it."
   [where content]
-  (when-not (and (vector? content) (every? #(or (string? %) (section-ref? %) (list-part? %)) content))
+  (when-not (and (vector? content) (every? #(or (string? %) (section-ref? %) (list-part? %) (rule? %)) content))
     (refuse (str where " must be a vector of strings, {:type :section :ref id},"
-                 " and {:type :list :content [...]} or {:type :checklist :content [...]}")))
+                 " {:type :list :content [...]}, {:type :checklist :content [...]}"
+                 " and {:type :hr}")))
   content)
 
 (defn- read-sections
@@ -125,6 +139,7 @@
                     (cond
                       (string? part) (update acc :lines conj part)
                       (list-part? part) (update acc :insets conj (assoc (list-doc part) :after after))
+                      (rule? part) (update acc :insets conj {:kind :rule :text "" :insets [] :after after})
                       :else
                       (let [id (:ref part)
                             {:keys [title] :as section} (sections id)]
@@ -199,6 +214,7 @@
                      (reduce (fn [parts item]
                                (conj parts (cond (string? item) (pr-str item)
                                                  (#{:list :checklist} (:kind item)) (list-part item)
+                                                 (= :rule (:kind item)) "{:type :hr}"
                                                  :else (ref item))))
                              []
                              (concat (below -1) (mapcat (fn [i line] (cons line (below i))) (range) lines)))))
@@ -229,10 +245,11 @@
   "Ask to delete the section or list the caret is in, if it is in one."
   [app _]
   (if-let [p (mode/current-inset app)]
-    (let [what (case (:kind (mode/inset-info app p)) :section "section" :list "list" "checklist")]
+    (let [what (case (:kind (mode/inset-info app p))
+                 :section "section" :list "list" :rule "rule" "checklist")]
       (mode/confirm app (str "Delete this " what "? (y/n)")
                     (fn [app now] (mode/message (mode/remove-inset app now p) (str "Deleted the " what)))))
-    (mode/message app "The caret is not in a section or list")))
+    (mode/message app "The caret is not in a section or list, or over a rule")))
 
 (defn- fold
   "Fold the section the caret is in, or unfold the one it is over."
@@ -265,26 +282,32 @@
  :inset-title "Section"
  :normal      {"cmd+s"  (add {})
                "cmd+shift+k" delete-inset
+               "cmd+shift+o" (fn [app now] (mode/line-above app now))
                " "      fold
                "cmd+r"  rename
                "l"      (add {:kind :list})
+               "h"      (add {:kind :rule})
                "ctrl+l" (add {:kind :checklist})
                "t"      tick
-               "tab"    (fn [app now] (mode/cycle-indent app now))}
+               "tab"    (fn [app now] (mode/cycle-indent app now))
+               "shift+return" (fn [app now] (mode/leave-inset app now))}
  :insert      {"cmd+l"        (add {:kind :list})
                "cmd+ctrl+l"   (add {:kind :checklist})
                "tab"          (fn [app now] (mode/cycle-indent app now))
                "return"       (fn [app now] (mode/list-return app now false))
-               "shift+return" (fn [app now] (mode/list-return app now true))}
+               "shift+return" (fn [app now] (mode/leave-inset app now))}
  :help        [["Auk mode"
                 [["cmd+s" "add a section below the line"]
-                 ["cmd+shift+k" "delete the section or list"]
+                 ["cmd+shift+k" "delete section, list or rule"]
+                 ["cmd+shift+o" "new line above the section or list"]
                  ["space" "fold or unfold the section"]
                  ["cmd+r" "rename the section"]
                  ["l" "add a list (cmd+l inserting)"]
                  ["ctrl+l" "add a checklist (cmd+ctrl+l inserting)"]
+                 ["h" "add a rule below the line"]
                  ["t" "tick or untick the checklist item"]
                  ["tab" "indent, outdent, restore a list item"]
-                 ["return (twice)" "leave the list (shift: every list)"]
-                 ["up / down" "into, out of and over sections"]
+                 ["return (twice)" "leave the list"]
+                 ["shift+return" "new line after the lists, or the section"]
+                 ["up / down" "into, out of, over and before sections"]
                  ["click a header" "fold or unfold a section"]]]]}

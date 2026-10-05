@@ -62,7 +62,8 @@
   hoatzin.app.insets): {:text s :insets [{:after k :text s :insets [...]}
   ...]}, the insets in order down the text, each below paragraph :after
   (-1: above the first) and each with its own insets, as a doc has them,
-  and with its :kind (:section, :list or :checklist), :title and, for a
+  and with its :kind (:section, :list, :checklist or :rule, a line
+  across the text, with no text of its own), :title and, for a
   checklist, :checked, a tick for each paragraph, if it has them. :read
   may answer just the text, a string, and leave out an inset's :insets. :read and :write
   may throw to say the file can't be: what they throw says why. A mode
@@ -76,6 +77,7 @@
             [clojure.string :as str]
             [hoatzin.app.confirm :as confirm]
             [hoatzin.app.insets :as insets]
+            [hoatzin.app.state :as state]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.lib.text :as text]
             [sci.core :as sci]))
@@ -144,6 +146,13 @@
   [app now all?]
   (insets/list-return app now all?))
 
+(defn- leave-inset
+  "A new line just after the list (every list the caret is in) or the
+  innermost section it is in, in the text that holds it, with the caret in
+  it, in insert mode; nil if the caret isn't in one."
+  [app now]
+  (some-> (insets/leave-inset app now) (state/enter-mode now :insert)))
+
 (defn- remove-inset
   "The app without the inset at `path`, as `current-inset` gives it."
   [app now path]
@@ -153,6 +162,13 @@
   "The inset the caret is in, as the path of ids down to it, or nil."
   [app]
   (insets/path app))
+
+(defn- line-above
+  "A new, empty line above the inset the caret is in, or over, in the text
+  that holds it, with the caret in it, in insert mode; nil if the caret
+  isn't in an inset."
+  [app now]
+  (some-> (insets/line-above app now) (state/enter-mode now :insert)))
 
 (defn- ask
   "Ask `prompt` in the status bar: answered yes, the app becomes
@@ -167,12 +183,14 @@
    'add-inset     (sci/copy-var add-inset api-ns)
    'remove-inset  (sci/copy-var remove-inset api-ns)
    'current-inset (sci/copy-var current-inset api-ns)
+   'line-above    (sci/copy-var line-above api-ns)
    'inset-info    (sci/copy-var inset-info api-ns)
    'toggle-inset  (sci/copy-var toggle-inset api-ns)
    'toggle-check  (sci/copy-var toggle-check api-ns)
    'rename-inset  (sci/copy-var rename-inset api-ns)
    'cycle-indent  (sci/copy-var cycle-indent api-ns)
    'list-return   (sci/copy-var list-return api-ns)
+   'leave-inset   (sci/copy-var leave-inset api-ns)
    'confirm       (sci/copy-var ask api-ns)})
 
 (defn- context [] (sci/init {:namespaces {'hoatzin.mode api}}))
@@ -237,7 +255,7 @@
   there is, and a doc itself."
   [i]
   (and (integer? (:after i)) (>= (:after i) -1)
-       (contains? #{nil :section :list :checklist} (:kind i))
+       (contains? #{nil :section :list :checklist :rule} (:kind i))
        ((some-fn nil? string?) (:title i))
        ((some-fn nil? #(every? boolean? %)) (:checked i))
        (map? i) (string? (:text i))

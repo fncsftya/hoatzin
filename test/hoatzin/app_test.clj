@@ -11,6 +11,7 @@
             [hoatzin.app.help-window :as help-window]
             [hoatzin.app.insets :as insets]
             [hoatzin.app.theme :as theme]
+            [hoatzin.lib.editor :as ed]
             [hoatzin.lib.layout :as layout]
             [hoatzin.lib.text :as text]
             [hoatzin.lib.sdl :as sdl]
@@ -159,6 +160,28 @@
     (let [lines (layout/line-count (:layout (t/app s)))]
       (t/resize! s 200 200)
       (is (> (layout/line-count (:layout (t/app s))) lines))
+      (is (caret-visible-on-screen? s)))))
+
+(deftest a-long-text-rewraps-once-the-width-holds
+  (with-session [s :width 400 :height 200]
+    (t/type! s (str/join " " (repeat 40 "hoatzin")))
+    (swap! s update :app assoc :live-wrap-chars 100)
+    (let [lines (layout/line-count (:layout (t/app s)))
+          width (get-in (t/app s) [:ctx :width])]
+      (t/resize! s 300 200)
+      (is (= lines (layout/line-count (:layout (t/app s)))) "not as the window is dragged")
+      (is (= width (get-in (t/app s) [:ctx :width])))
+      (is (= 120 (app/ms-until-wake (t/app s) (:now @s))) "but waking for it")
+      (t/advance! s 100)
+      (t/resize! s 200 200)
+      (is (= lines (layout/line-count (:layout (t/app s)))) "each new width waits again")
+      (t/advance! s 119)
+      (t/send! s {:type :tick})
+      (is (= lines (layout/line-count (:layout (t/app s)))))
+      (t/advance! s 1)
+      (t/send! s {:type :tick})
+      (is (> (layout/line-count (:layout (t/app s))) lines) "once it has held, it wraps to it")
+      (is (nil? (:wrap-at (t/app s))))
       (is (caret-visible-on-screen? s)))))
 
 (defn- shown-text
@@ -1665,7 +1688,246 @@
       (is (apply < (second start) (map second down)) "each lower than the last")
       (is (= (reverse (into [start] (butlast down))) up) "and back up the same way")
       (t/press! s sdl/K-UP)
-      (is (= [[0] "z"] (stop s)) "the first line stays the first"))))
+      (is (= [[0] :header] (stop s)) "above the first line, the caret goes before the list it is in")
+      (is (insets/before (t/app s)))
+      (t/press! s sdl/K-UP)
+      (is (= [[0] :header] (stop s)) "and there is nothing above that"))))
+
+(deftest up-goes-before-an-inset-with-nothing-above
+  (with-session [s :mode :normal]
+    (auk! s {:content [(ref 1) "after"] :sections [{:id 1 :content ["in"]}]})
+    (t/press! s sdl/K-UP)
+    (is (= [0] (insets/path (t/app s))) "up from the first line goes into the section")
+    (is (not (insets/over (t/app s))))
+    (t/press! s sdl/K-UP)
+    (is (= [0] (insets/path (t/app s))))
+    (is (some? (insets/before (t/app s))) "and up again, before it")
+    (t/press! s sdl/K-UP)
+    (is (some? (insets/before (t/app s))) "where it stays")
+    (t/press! s sdl/K-DOWN)
+    (is (nil? (insets/before (t/app s))) "down goes into the section again")
+    (is (= "in" (in-section s)))
+    (t/press! s sdl/K-UP)
+    (is (some? (insets/before (t/app s))))
+    (testing "cmd+shift+o makes a line above it, to write in"
+      (t/press! s sdl/K-O (bit-or cmd sdl/KMOD-SHIFT))
+      (is (= :insert (:mode (t/app s))))
+      (is (nil? (insets/path (t/app s))))
+      (is (= "\nafter" (t/text s)))
+      (is (= 0 (t/caret s)))
+      (is (= [[0 "in"]] (sections s)) "the section is below the new line")
+      (t/type! s "new")
+      (is (= "new\nafter" (t/text s))))))
+
+(deftest cmd-shift-o-opens-a-line-above-a-section-or-list
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :list :content [{:text "a"}]} "two"]})
+    (t/press! s sdl/K-DOWN)
+    (is (= [0] (insets/path (t/app s))))
+    (t/press! s sdl/K-O (bit-or cmd sdl/KMOD-SHIFT))
+    (is (= "one\n\ntwo" (t/text s)) "a line between the line above the list and the list")
+    (is (= [[1 "a"]] (sections s)) "the list below it")
+    (is (= 4 (t/caret s)))
+    (is (= :insert (:mode (t/app s)))))
+  (testing "on a normal line it is shift+o"
+    (with-session [s :mode :normal]
+      (auk! s {:content ["one" "two"]})
+      (t/press! s sdl/K-O (bit-or cmd sdl/KMOD-SHIFT))
+      (is (= "\none\ntwo" (t/text s)))
+      (is (= :insert (:mode (t/app s)))))))
+
+(defn- selections
+  "Each text's selection, the buffer's first, then the insets' in order:
+  what each shows."
+  [s]
+  (letfn [(walk [level]
+            (cons (ed/selected-text (:doc level))
+                  (mapcat (fn [{:keys [id]}] (walk (get-in level [:insets id])))
+                          (insets/ordered level))))]
+    (walk (t/app s))))
+
+(deftest selecting-down-through-a-list
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :list :content [{:text "a"} {:text "b"}]} "two"]})
+    (t/press! s sdl/K-DOWN sdl/KMOD-SHIFT)
+    (is (= ["one" nil] (map #(some-> % str) (selections s)))
+        "into the list: all of the line above it")
+    (t/press! s sdl/K-DOWN sdl/KMOD-SHIFT)
+    (is (= ["one" "a\n"] (selections s)))
+    (t/press! s sdl/K-DOWN sdl/KMOD-SHIFT)
+    (is (= ["one\n" "a\nb"] (selections s)) "and out of it, the list is in the selection")
+    (t/press! s sdl/K-DOWN sdl/KMOD-SHIFT)
+    (is (= ["one\ntwo" "a\nb"] (selections s)))
+    (t/press! s sdl/K-UP sdl/KMOD-SHIFT)
+    (is (= ["one" "a\nb"] (selections s)) "and back, into the list from below")
+    (t/press! s sdl/K-ESCAPE)
+    (is (every? nil? (selections s)) "escape gives it all up")))
+
+(deftest selecting-through-a-section-has-one-selection
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" (ref 1) "two"] :sections [{:id 1 :content ["in" "side"]}]})
+    (t/press! s sdl/K-RIGHT sdl/KMOD-SHIFT)
+    (is (= ["o" nil] (selections s)))
+    (t/press! s sdl/K-END sdl/KMOD-SHIFT)
+    (t/press! s sdl/K-RIGHT sdl/KMOD-SHIFT)
+    (is (= [[0] "in\nside"] [(insets/path (t/app s)) (in-section s)]) "the caret goes into the section")
+    (is (= ["one" nil] (selections s)))
+    (t/press! s sdl/K-DOWN sdl/KMOD-SHIFT)
+    (t/press! s sdl/K-END sdl/KMOD-SHIFT)
+    (is (= ["one" "in\nside"] (selections s)))
+    (t/press! s sdl/K-RIGHT sdl/KMOD-SHIFT)
+    (is (nil? (insets/path (t/app s))) "right at the end of the section goes on to the text after")
+    (is (= ["one\n" "in\nside"] (selections s)))
+    (t/press! s sdl/K-LEFT sdl/KMOD-SHIFT)
+    (t/press! s sdl/K-LEFT sdl/KMOD-SHIFT)
+    (is (= ["one" "in\nsid"] (selections s)) "and back, a character at a time")
+    (testing "it is one selection to copy"
+      (t/press! s sdl/K-C cmd)
+      (is (= "one\nin\nsid" (:clipboard @s))))
+    (testing "a movement without shift gives it up everywhere"
+      (t/press! s sdl/K-LEFT)
+      (is (every? nil? (selections s))))))
+
+(deftest select-all-takes-in-the-insets
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :list :content [{:text "a"}]} (ref 1) "two"]
+             :sections [{:id 1 :content ["in" (ref 2)]} {:id 2 :content ["deep"]}]})
+    (t/press! s sdl/K-A cmd)
+    (is (= ["one\ntwo" "a" "in" "deep"] (selections s)) "every text, whole")
+    (t/press! s sdl/K-C cmd)
+    (is (= "one\na\nin\ndeep\ntwo" (:clipboard @s)))
+    (testing "cmd+shift+a selects what is in the inset the caret is in"
+      (t/press! s sdl/K-ESCAPE)
+      (t/press! s sdl/K-UP cmd)
+      (t/press! s sdl/K-DOWN)
+      (t/press! s sdl/K-DOWN)
+      (is (= "in" (in-section s)))
+      (t/press! s sdl/K-A (bit-or cmd sdl/KMOD-SHIFT))
+      (is (= [nil nil "in" "deep"] (selections s)))
+      (t/press! s sdl/K-C cmd)
+      (is (= "in\ndeep" (:clipboard @s))))
+    (testing "and with the caret in no inset, all"
+      (t/press! s sdl/K-ESCAPE)
+      (dotimes [_ 6] (t/press! s sdl/K-UP))
+      (is (nil? (insets/path (t/app s))))
+      (t/press! s sdl/K-A (bit-or cmd sdl/KMOD-SHIFT))
+      (is (= ["one\ntwo" "a" "in" "deep"] (selections s))))))
+
+(deftest deleting-a-selection-across-texts
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :list :content [{:text "a"}]} (ref 1) "two"]
+             :sections [{:id 1 :content ["inner"]}]})
+    (press-i! s)
+    (t/press! s sdl/K-A cmd)
+    (t/press! s sdl/K-BACKSPACE)
+    (is (= "" (t/text s)))
+    (is (= [] (sections s)) "the insets that were all of it go")
+    (is (every? nil? (selections s)))
+    (t/type! s "x")
+    (is (= "x" (t/text s)) "and typing goes on where it began"))
+  (testing "a part of it"
+    (with-session [s :mode :normal]
+      (auk! s {:content ["one" (ref 1) "two"] :sections [{:id 1 :content ["inner" "text"]}]})
+      (press-i! s)
+      (t/press! s sdl/K-RIGHT)
+      (dotimes [_ 8] (t/press! s sdl/K-RIGHT sdl/KMOD-SHIFT))
+      (is (= ["ne" "inner"] (map str (remove nil? (selections s)))) "ne, and the section's first line")
+      (t/press! s sdl/K-BACKSPACE)
+      (is (= "o\ntwo" (t/text s)))
+      (is (= [[0 "\ntext"]] (sections s)) "the section is as it was but for what was selected of it"))))
+
+(deftest a-modifier-pressed-alone-keeps-the-selection
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :list :content [{:text "a"}]} "two"]})
+    (t/press! s sdl/K-A (bit-or cmd sdl/KMOD-SHIFT))
+    (is (= ["one\ntwo" "a"] (selections s)))
+    (doseq [k [0x400000e3 0x400000e1 0x400000e0]]
+      (t/press! s k))
+    (is (= ["one\ntwo" "a"] (selections s)) "cmd, shift and ctrl, as they come and go")))
+
+(deftest dragging-selects-across-insets
+  (with-session [s :mode :normal :height 600]
+    (auk! s {:content ["one" {:type :list :content [{:text "a"} {:text "b"}]} (ref 1) "two"]
+             :sections [{:id 1 :content ["in" "side"]}]})
+    (let [a  (t/app s)
+          lh (layout/line-height (:layout a))
+          y  (fn [k] (+ 48.0 (geo/line-top a k) (quot lh 2)))
+          [lx ly] (let [[bx by bw bh] (:text (insets/place-of a 0))] [(+ 48.0 bx 4) (+ 48.0 by (quot lh 2))])]
+      (t/drag! s [49.0 (y 0)] [(+ 48.0 400) (y 1)])
+      (is (= ["one\ntwo" "a\nb" "in\nside"] (selections s)) "down to the line after them: all of the insets between")
+      (t/drag! s [49.0 (y 0)] [lx ly])
+      (is (= ["one" nil nil] (selections s)) "into the list, at its start")
+      (t/press! s sdl/K-C cmd)
+      (is (= "one\n" (:clipboard @s))))))
+
+(deftest backspace-moves-a-line-up-into-the-inset-above
+  (testing "an empty line"
+    (with-session [s :mode :normal]
+      (auk! s {:content ["one" {:type :list :content [{:text "a"} {:text "b"}]} "" "two"]})
+      (press-i! s)
+      (t/press! s sdl/K-DOWN) (t/press! s sdl/K-DOWN) (t/press! s sdl/K-DOWN)
+      (is (nil? (insets/path (t/app s))))
+      (is (= 4 (t/caret s)) "on the empty line")
+      (t/press! s sdl/K-BACKSPACE)
+      (is (= "one\ntwo" (t/text s)))
+      (is (= [[0 "a\nb"]] (sections s)))
+      (is (= [[0] 3] [(insets/path (t/app s)) (section-caret s)]) "the caret at the end of the list")))
+  (testing "a line with text joins the last line"
+    (with-session [s :mode :normal]
+      (auk! s {:content ["one" (ref 1) "two"] :sections [{:id 1 :content ["in" (ref 2)]} {:id 2 :content ["deep"]}]})
+      (press-i! s)
+      (t/press! s sdl/K-DOWN) (t/press! s sdl/K-DOWN) (t/press! s sdl/K-DOWN)
+      (is (= 4 (t/caret s)))
+      (t/press! s sdl/K-BACKSPACE)
+      (is (= "one" (t/text s)))
+      (is (= [[0 "in" [[0 "deeptwo"]]]] (sections s)))
+      (is (= 4 (section-caret s)) "the caret where they joined"))))
+
+(deftest shift-return-leaves-without-touching-what-is-in-them
+  (testing "lists, in insert mode: only a line is added, and it can be undone"
+    (with-session [s :mode :normal]
+      (auk! s {:content ["one" {:type :list :content [{:text "a"} {:type :list :content [{:text ""}
+                                {:type :list :content [{:text "deep"}]}]}]} "two"]})
+      (press-i! s)
+      (t/press! s sdl/K-DOWN)
+      (t/press! s sdl/K-DOWN)
+      (is (= [0 0] (insets/path (t/app s))))
+      (let [before (sections s)]
+        (t/press! s sdl/K-RETURN sdl/KMOD-SHIFT)
+        (is (= "one\n\ntwo" (t/text s)) "a line after the top list")
+        (is (nil? (insets/path (t/app s))))
+        (is (= 4 (t/caret s)))
+        (is (= (map rest before) (map rest (sections s))) "the lists are all there")
+        (t/press! s sdl/K-ESCAPE)
+        (t/type! s "u")
+        (is (= "one\ntwo" (t/text s)) "and the line is in the history"))))
+  (testing "in normal mode, and then in insert mode"
+    (with-session [s :mode :normal]
+      (auk! s {:content ["one" {:type :list :content [{:text "a"}]} "two"]})
+      (t/press! s sdl/K-DOWN)
+      (t/press! s sdl/K-RETURN sdl/KMOD-SHIFT)
+      (is (= "one\n\ntwo" (t/text s)))
+      (is (= :insert (:mode (t/app s))))))
+  (testing "sections: after the innermost, in the text that holds it"
+    (with-session [s :mode :normal]
+      (auk! s {:content ["one" (ref 1) "two"]
+               :sections [{:id 1 :content ["a" (ref 2) "b"]} {:id 2 :content ["x"]}]})
+      (t/press! s sdl/K-DOWN)
+      (t/press! s sdl/K-DOWN)
+      (is (= [0 0] (insets/path (t/app s))))
+      (t/press! s sdl/K-RETURN sdl/KMOD-SHIFT)
+      (is (= [0] (insets/path (t/app s))) "in the outer section, not the buffer")
+      (is (= "a\n\nb" (in-section s)) "a new line after the inner one"))))
+
+(deftest k-deletes-a-mixed-selection
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" (ref 1) "two"] :sections [{:id 1 :content ["inner"]}]})
+    (t/press! s sdl/K-A cmd)
+    ;; the key, then its text, as SDL reports them
+    (t/send! s {:type :key :key 0x6b :mod 0} {:type :text :text "k"})
+    (is (= "" (t/text s)))
+    (is (= [] (sections s)) "no confirmation, and the section that was all of it goes")
+    (is (= :normal (:mode (t/app s))))))
 
 (deftest up-and-down-cross-sections-in-sections
   (with-session [s :mode :normal]
@@ -1724,7 +1986,7 @@
   (with-session [s :mode :normal]
     (auk! s {:content ["one" (ref 1)] :sections [{:id 1 :content ["doomed"]}]})
     (t/press! s sdl/K-K (bit-or cmd sdl/KMOD-SHIFT))
-    (is (= "The caret is not in a section or list" (:message (t/app s))))
+    (is (= "The caret is not in a section or list, or over a rule" (:message (t/app s))))
     (t/press! s sdl/K-DOWN)
     (t/press! s sdl/K-K (bit-or cmd sdl/KMOD-SHIFT))
     (is (= "Delete this section? (y/n)" (get-in (t/app s) [:confirm :prompt])))
@@ -2011,7 +2273,7 @@
     (is (= " two\nthree" (t/text s)) "but not past the end of a line a section is below")
     (is (= [[0 "in"]] (sections s)))
     (t/press! s sdl/K-DOWN)
-    (t/type! s "0")
+    (t/press! s sdl/K-A sdl/KMOD-CTRL)
     (t/type! s "k")
     (is (= "n" (in-section s)) "in a section, its own text")
     (t/type! s "u")
@@ -2764,27 +3026,44 @@
     (press-i! s)
     (t/type! s "  one two")
     (t/press! s sdl/K-ESCAPE)
-    (t/type! s "0")
+    (t/press! s sdl/K-A sdl/KMOD-CTRL)
     (is (= 0 (t/caret s)))
-    (t/type! s "^")
+    (t/press! s sdl/K-M cmd)
     (is (= 2 (t/caret s)))
+    (t/press! s sdl/K-E sdl/KMOD-CTRL)
+    (is (= 9 (t/caret s)))
+    (t/press! s sdl/K-M cmd)
     (t/type! s "w")
     (t/type! s "c")
+    (is (= "one" (:clipboard @s)) "c copies the word")
+    (is (nil? (t/selected s)) "and leaves nothing selected")
+    (is (= 5 (t/caret s)) "the caret where it was")
     (t/set-clipboard! s "x")
-    (t/type! s "c")
+    (t/press! s sdl/K-M cmd)
+    (t/type! s "w")
     (t/type! s "x")
     (is (= "   two" (t/text s)) "x cut the word")
+    (is (nil? (t/selected s)))
     (t/type! s "p")
     (is (= "  one two" (t/text s)) "p pastes it back")
     (is (= :normal (:mode (t/app s))))))
 
-(deftest ctrl-a-and-e-in-insert-mode
+(deftest line-keys-in-both-modes
   (with-session [s]
-    (t/type! s "one two")
+    (t/type! s "  one two")
     (t/press! s sdl/K-A sdl/KMOD-CTRL)
     (is (= 0 (t/caret s)))
     (t/press! s sdl/K-E sdl/KMOD-CTRL)
-    (is (= 7 (t/caret s)))))
+    (is (= 9 (t/caret s)))
+    (t/press! s sdl/K-M cmd)
+    (is (= 2 (t/caret s)) "cmd+m: the first non-blank")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-A sdl/KMOD-CTRL)
+    (is (= 0 (t/caret s)) "and the same in normal mode")
+    (t/press! s sdl/K-E sdl/KMOD-CTRL)
+    (is (= 9 (t/caret s)))
+    (t/press! s sdl/K-M (bit-or cmd sdl/KMOD-SHIFT))
+    (is (= "one two" (t/selected s)) "shift extends")))
 
 (deftest g-goes-to-a-line
   (with-session [s :mode :normal]
@@ -3212,3 +3491,142 @@
     (t/type! s "w")
     (t/type! s "v")
     (is (= "Variants are only of the buffer's own text" (:message (t/app s))))))
+
+;; ---------------------------------------------------------------- the mark
+
+(deftest m-sets-the-mark-and-selects-from-it
+  (with-session [s]
+    (t/type! s "one two three")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-UP cmd)
+    (t/type! s "m")
+    (is (= "Mark set" (:message (t/app s))))
+    (is (nil? (t/selected s)) "nothing selected yet")
+    (dotimes [_ 3] (t/press! s sdl/K-RIGHT))
+    (is (= "one" (t/selected s)) "moving selects from it")
+    (t/press! s sdl/K-RIGHT cmd)
+    (is (= "one " (t/selected s)))
+    (t/press! s sdl/K-A sdl/KMOD-CTRL)
+    (is (nil? (t/selected s)) "back at the mark, nothing")
+    (t/press! s sdl/K-DOWN)
+    (is (= "one two three" (t/selected s)))
+    (t/press! s sdl/K-ESCAPE)
+    (is (nil? (t/selected s)) "escape ends it")
+    (t/press! s sdl/K-LEFT)
+    (is (nil? (t/selected s)) "and moving no longer selects")
+    (testing "c and x leave nothing selected, and the mark not active"
+      (t/press! s sdl/K-UP cmd)
+      (t/type! s "m")
+      (dotimes [_ 3] (t/press! s sdl/K-RIGHT))
+      (t/type! s "c")
+      (is (= "one" (:clipboard @s)))
+      (is (nil? (t/selected s)))
+      (t/press! s sdl/K-RIGHT)
+      (is (nil? (t/selected s)))
+      (t/type! s "m")
+      (dotimes [_ 4] (t/press! s sdl/K-RIGHT))
+      (t/type! s "x")
+      (is (= "one three" (t/text s)))
+      (is (nil? (t/selected s)))
+      (t/press! s sdl/K-RIGHT)
+      (is (nil? (t/selected s))))
+    (testing "insert mode ends it"
+      (t/type! s "m")
+      (t/type! s "i")
+      (t/press! s sdl/K-ESCAPE)
+      (t/press! s sdl/K-RIGHT)
+      (is (nil? (t/selected s))))))
+
+(deftest j-jumps-back-to-the-mark
+  (with-session [s]
+    (t/type! s "one two three")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s "j")
+    (is (= "No mark set" (:message (t/app s))))
+    (t/press! s sdl/K-UP cmd)
+    (t/type! s "m")
+    (t/press! s sdl/K-ESCAPE)
+    (dotimes [_ 4] (t/press! s sdl/K-RIGHT))
+    (t/type! s "m")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-DOWN cmd)
+    (t/type! s "j")
+    (is (= 4 (t/caret s)) "to the mark")
+    (is (nil? (t/selected s)) "selecting nothing")
+    (t/press! s sdl/K-RIGHT)
+    (is (nil? (t/selected s)) "with the mark not active")
+    (t/type! s "j")
+    (is (= 0 (t/caret s)) "then the one before")
+    (t/type! s "j")
+    (is (= 4 (t/caret s)) "and round again")
+    (testing "marks move with the text"
+      (t/press! s sdl/K-UP cmd)
+      (t/type! s "i")
+      (t/type! s "zz")
+      (t/press! s sdl/K-ESCAPE)
+      (t/press! s sdl/K-DOWN cmd)
+      (t/type! s "j")
+      (is (= 0 (t/caret s)) "as Emacs's: what is typed at a mark goes after it")
+      (t/type! s "j")
+      (is (= 6 (t/caret s)) "and what is typed before one pushes it along"))))
+
+(deftest the-mark-ring-keeps-sixteen
+  (let [doc (reduce (fn [d i] (ed/set-mark (ed/move d i))) (ed/doc "abcdefghijklmnopqrstuvwxyz") (range 20))]
+    (is (= 16 (count (:mark-ring doc))))
+    (is (= 17 (count (:marks doc))) "the oldest let go")
+    (is (= [19 18 17] (->> (iterate ed/jump-to-mark doc) rest (take 3) (map :caret))))))
+
+;; ---------------------------------------------------------------- auk rules
+
+(deftest h-adds-a-rule
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" "two"]})
+    (t/type! s "h")
+    (is (= [{:after 0 :text "" :insets [] :kind :rule}] (insets/snapshot (t/app s))) "below the line")
+    (is (= "one\ntwo" (t/text s)) "with no new line: there is a line after it")
+    (is (nil? (insets/path (t/app s))) "the caret not in it")
+    (is (= 4 (t/caret s)) "but on the line after it")
+    (t/command! s "w")
+    (is (= "{:content\n [\"one\"\n  {:type :hr}\n  \"two\"]}\n" (get-in @s [:files "/notes/n.auk"])))
+    (testing "the caret goes over it, as over a folded section"
+      (t/press! s sdl/K-UP)
+      (is (insets/over (t/app s)))
+      (t/type! s " ")
+      (is (insets/over (t/app s)) "space doesn't unfold it")
+      (t/press! s sdl/K-UP)
+      (is (nil? (insets/path (t/app s))))
+      (is (= 0 (t/caret s))))
+    (testing "and deletes it, once asked"
+      (t/press! s sdl/K-DOWN)
+      (t/press! s sdl/K-K (bit-or cmd sdl/KMOD-SHIFT))
+      (is (= "Delete this rule? (y/n)" (:prompt (:confirm (t/app s)))))
+      (t/type! s "y")
+      (is (= [] (insets/snapshot (t/app s))))))
+  (testing "on the last line, with a new line after it"
+    (with-session [s :mode :normal]
+      (auk! s {:content ["one"]})
+      (t/type! s "h")
+      (is (= "one\n" (t/text s)))
+      (is (= 4 (t/caret s)))))
+  (testing "on an empty line, in its place"
+    (with-session [s :mode :normal]
+      (auk! s {:content ["one" "" "two"]})
+      (t/press! s sdl/K-DOWN)
+      (t/type! s "h")
+      (is (= "one\n\ntwo" (t/text s)))
+      (is (= [{:after 0 :text "" :insets [] :kind :rule}] (insets/snapshot (t/app s))))
+      (is (= 4 (t/caret s)))))
+  (testing "read back, in a section"
+    (with-session [s :mode :normal]
+      (auk! s {:content ["one" (ref 1)] :sections [{:id 1 :content ["a" {:type :hr} "b"]}]})
+      (is (= [{:after 0 :text "a\nb"
+               :insets [{:after 0 :text "" :insets [] :kind :rule}]}]
+             (insets/snapshot (t/app s))))))
+  (testing "in a list, after it"
+    (with-session [s :mode :normal]
+      (auk! s {:content ["one" {:type :list :content [{:text "a"}]} "two"]})
+      (t/press! s sdl/K-DOWN)
+      (t/type! s "h")
+      (is (= [:list :rule] (map :kind (insets/snapshot (t/app s)))))
+      (is (nil? (insets/path (t/app s))))
+      (is (= 4 (t/caret s))))))

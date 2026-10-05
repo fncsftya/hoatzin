@@ -36,7 +36,9 @@
 (def K-V         0x76)
 (def K-X         0x78)
 (def K-K         0x6b)
+(def K-M         0x6d)
 (def K-N         0x6e)
+(def K-O         0x6f)
 (def K-S         0x73)
 (def K-HOME      0x4000004a)
 (def K-PAGEUP    0x4000004b)
@@ -62,6 +64,7 @@
 ;; Offsets checked against the SDL 3.4 headers with offsetof.
 (def EVENT-SIZE 128)
 (def O-event-type 0)
+(def O-window-data1 20)   ; SDL_WindowEvent.data1 (Sint32): for EXPOSED, 1 while live-resizing
 (def O-key-key 28)        ; SDL_KeyboardEvent.key (SDL_Keycode)
 (def O-key-mod 32)        ; SDL_KeyboardEvent.mod (SDL_Keymod, Uint16)
 (def O-text-text 24)      ; SDL_TextInputEvent.text (const char *)
@@ -95,6 +98,8 @@
 (ffi/defcfn sdl-free    "SDL_free"        [:pointer] :void)
 (ffi/defcfn poll-event  "SDL_PollEvent"   [:pointer] :bool)
 (ffi/defcfn push-event  "SDL_PushEvent"   [:pointer] :bool)
+(ffi/defcfn add-event-watch    "SDL_AddEventWatch"    [:pointer :pointer] :bool)
+(ffi/defcfn remove-event-watch "SDL_RemoveEventWatch" [:pointer :pointer] :void)
 (ffi/defcfn wait-event-timeout "SDL_WaitEventTimeout" [:pointer :int] :bool :blocking)
 (ffi/defcfn convert-event-to-render-coordinates "SDL_ConvertEventToRenderCoordinates"
   [:pointer :pointer] :bool)

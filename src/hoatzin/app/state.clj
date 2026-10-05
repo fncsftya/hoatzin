@@ -14,6 +14,10 @@
    :thumb-width-active 10
    :thumb-min   32             ; points: the shortest the thumb gets
    :autoscroll-ms 50           ; how often a drag held outside the text scrolls
+   :live-wrap-chars 400000     ; past this many characters, the text re-wraps to a
+                               ; new width only once the width has held for
+   :wrap-delay-ms 120          ; this long, rather than as the window is dragged:
+                               ; each means wrapping the whole text again
    :font-delay-ms 150          ; how long a changed editor font setting waits
                                ; for the next change before it applies: each
                                ; means wrapping the whole text again
@@ -81,7 +85,10 @@
 ;;   :caret-shape                          :underline for the caret to be one,
 ;;                                         else nil
 ;;   :insets :inset :next-inset-id         the current buffer's insets, the
-;;   :saved-insets :inset-ctx              one the caret is in, the number
+;;   :before? :xsel                        one the caret is in (before?: it
+;;                                         is before it), what is selected
+;;                                         across them (hoatzin.app.xsel),
+;;   :saved-insets :inset-ctx              the number
 ;;                                         the next is to have, what they
 ;;                                         are in its file, and their text's
 ;;                                         layout context: see
@@ -115,6 +122,9 @@
 ;;                                         up/down
 ;;   :upstream?                            the caret, at a wrap point, is drawn
 ;;                                         at the end of the line above
+;;   :selecting?                           the mark is active, as Emacs has it:
+;;                                         the keys that move the caret
+;;                                         extend the selection, as with shift
 ;;   :dragging? :drag-word :drag-point     a click is extending the selection
 ;;                                         (by words, from :drag-word [lo hi]),
 ;;                                         the pointer last at :drag-point [x y]
@@ -153,6 +163,9 @@
 ;;                                         :id of the interactive one it is
 ;;                                         over, if any
 ;;   :size :scroll                         output size and scroll, in pixels
+;;   :wrap-width :wrap-at                  the width the text is to wrap to,
+;;                                         and when, while a long text waits
+;;                                         for its new width to hold
 ;;   :scroll-target :scroll-pos :scroll-at the scroll the wheel is gliding to, the
 ;;                                         exact scroll on the way and when it
 ;;                                         last moved
@@ -175,5 +188,10 @@
   [app now]
   (assoc app :follow? true :dirty? true :blink-from now))
 
-(defn enter-mode [app now mode]
-  (-> app (assoc :mode mode :dirty? true :blink-from now) (update :mode-count (fnil inc 0))))
+(defn enter-mode
+  "The app in `mode`: out of normal mode, the mark is no longer active."
+  [app now mode]
+  (-> app
+      (assoc :mode mode :dirty? true :blink-from now)
+      (cond-> (not= :normal mode) (dissoc :selecting?))
+      (update :mode-count (fnil inc 0))))

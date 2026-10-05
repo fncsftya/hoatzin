@@ -426,3 +426,37 @@
                                    :selected 0}]}})
     (t/press! s sdl/K-ESCAPE)
     (t/matches-golden? "variant-across-lines" (t/render! s))))
+
+(deftest ^:integration auk-rules
+  ;; two rules, the caret over the second, which is highlighted
+  (with-session [s :mode :normal :height 300]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk"
+                :text (pr-str {:content ["Hoatzins." {:type :hr} "Swamps." {:type :hr} "Leaves."]})})
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-DOWN)
+    (t/matches-golden? "auk-rules" (t/render! s))))
+
+(deftest ^:integration auk-selection-across-insets
+  ;; one selection from the first line, through a list and a section, to the
+  ;; line after them: every text shows its part
+  (with-session [s :mode :normal :height 420]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk"
+                :text (pr-str {:content ["Hoatzins eat:"
+                                         {:type :list :content [{:text "leaves"} {:text "flowers"}]}
+                                         {:type :section :ref 1}
+                                         "and are smelly."]
+                               :sections [{:id 1 :title "Habitat" :content ["Swamps and mangroves."]}]})})
+    (t/press! s sdl/K-RIGHT sdl/KMOD-SHIFT)
+    (dotimes [_ 6] (t/press! s sdl/K-DOWN sdl/KMOD-SHIFT))
+    (t/matches-golden? "auk-selection-across-insets" (t/render! s))))
+
+(deftest ^:integration auk-before-a-section
+  ;; the caret before a section with nothing above it: its header highlighted
+  (with-session [s :mode :normal :height 300]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk"
+                :text (pr-str {:content [{:type :section :ref 1} "Hoatzins."]
+                               :sections [{:id 1 :title "Habitat" :content ["Swamps and mangroves."]}]})})
+    (t/press! s sdl/K-UP)
+    (t/press! s sdl/K-UP)
+    (t/matches-golden? "auk-before-a-section" (t/render! s))))

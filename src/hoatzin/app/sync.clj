@@ -70,17 +70,34 @@
 
 (defn- sync-size
   "Take the renderer's output size, and wrap the text, and the insets'
-  text, to fit it."
-  [app]
+  text, to fit it. Given the time, `now`, a text longer than
+  :live-wrap-chars keeps the width it is wrapped to until a new one has
+  held for :wrap-delay-ms, as it does while the window is dragged: until
+  then the text shows as it was wrapped, within the window, and
+  `ms-until-wake` wakes the app for it."
+  [app now]
   (let [[w _ :as size] (sdl/render-output-size (:renderer app))
-        wrap (max 1 (- w (* 2 (px app (:margin app)))))
-        app (if (= wrap (get-in app [:ctx :width]))
+        wrap  (max 1 (- w (* 2 (px app (:margin app)))))
+        wrapped (get-in app [:ctx :width])
+        wait? (and now wrapped (> (count (get-in app [:doc :text])) (:live-wrap-chars app)))
+        app (cond
+              (= wrap wrapped)
+              (dissoc app :wrap-width :wrap-at)
+
+              (and wait? (not= wrap (:wrap-width app)))
+              (assoc app :wrap-width wrap :wrap-at (+ now (:wrap-delay-ms app)))
+
+              (and wait? (< now (:wrap-at app)))
               app
+
+              :else
               (do (some-> (:ctx app) layout/release-context)
                   (insets/release-contexts! app)
                   ;; Re-wrapping moves every line; keep the caret's in view.
-                  (assoc app :ctx (layout/context (:font app) wrap) :layout nil :follow? true
-                         :inset-ctxs {})))]
+                  (-> app
+                      (dissoc :wrap-width :wrap-at)
+                      (assoc :ctx (layout/context (:font app) wrap) :layout nil :follow? true
+                             :inset-ctxs {}))))]
     (if (= size (:size app)) app (assoc app :size size :dirty? true))))
 
 (defn- sync-layout
@@ -96,17 +113,21 @@
   "Bring font, layout context and layout up to date with the renderer's
   output and the text, then place the boxes. Each step is a cheap
   comparison unless its inputs changed. Between frames, as this is, it also
-  trims the layout's cache."
-  [app]
-  (let [app (-> app sync-fonts sync-theme sync-size files/sync-modified)]
-    (layout/trim! (:ctx app))
-    (let [app (-> app sync-layout insets/sync-layouts)]
-      (assoc (boxes/place-all app) :float-places (boxes/place-floats app)))))
+  trims the layout's cache. Without the time, `now`, a new width wraps
+  the text at once, however long it is (see `sync-size`)."
+  ([app] (sync-view app nil))
+  ([app now]
+   (let [app (-> app sync-fonts sync-theme (sync-size now) files/sync-modified)]
+     (layout/trim! (:ctx app))
+     (let [app (-> app sync-layout insets/sync-layouts)]
+       (assoc (boxes/place-all app) :float-places (boxes/place-floats app))))))
 
 (defn settle
-  "Sync the view, then scroll as the last batch of events asked."
-  [app]
-  (let [app (sync-view app)]
-    (scroll/clamp-scroll (if (:follow? app)
-                           (-> app scroll/follow-caret (assoc :follow? false))
-                           app))))
+  "Sync the view at time `now`, if given, then scroll as the last batch
+  of events asked."
+  ([app] (settle app nil))
+  ([app now]
+   (let [app (sync-view app now)]
+     (scroll/clamp-scroll (if (:follow? app)
+                            (-> app scroll/follow-caret (assoc :follow? false))
+                            app)))))

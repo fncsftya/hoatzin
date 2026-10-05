@@ -143,6 +143,7 @@
             [hoatzin.app.input.keyboard :as keyboard]
             [hoatzin.app.input.mouse :as mouse]
             [hoatzin.app.insets :as insets]
+            [hoatzin.app.xsel :as xsel]
             [hoatzin.app.modes :as modes]
             [hoatzin.app.rename :as rename]
             [hoatzin.app.scroll :as scroll]
@@ -223,36 +224,46 @@
       :quit   (assoc app :quit? true)
       ;; Over a folded section there is no text to edit: only the
       ;; commands that leave it alone work.
-      :text   (if (state/command? app)
-                (keyboard/on-text app now (:text event))
-                (or (when (normal? app)
-                      (some-> (modes/normal-command app (:text event)) (as-> f (f app now))))
-                    (if (insets/over app)
-                      (if (and (normal? app) (#{":" "?"} (:text event)))
-                        (keyboard/on-text app now (:text event))
-                        app)
-                      (in-text #(keyboard/on-text % now (:text event))))))
+      :text   (let [typed (fn [app]
+                            (or (when (normal? app)
+                                  (some-> (modes/normal-command app (:text event)) (as-> f (f app now))))
+                                (if (insets/over app)
+                                  (if (and (normal? app) (#{":" "?"} (:text event)))
+                                    (keyboard/on-text app now (:text event))
+                                    app)
+                                  (insets/in-view app #(keyboard/on-text % now (:text event))))))]
+                (cond (state/command? app) (keyboard/on-text app now (:text event))
+                      :else (or (xsel/on-text app now (:text event) typed) (typed app))))
       ;; Normal mode has no use for the input method's marked text.
-      :composition (if (and (state/insert? app) (not (insets/over app)))
-                     (in-text #(keyboard/compose % now (:text event) (:cursor event)))
-                     app)
+      :composition (let [app (if (and (:xsel app) (state/insert? app) (seq (:text event)))
+                               (xsel/delete-selection app now)
+                               app)]
+                     (if (and (state/insert? app) (not (insets/over app)))
+                       (in-text #(keyboard/compose % now (:text event) (:cursor event)))
+                       app))
       ;; While composing, keys and clicks belong to the input method, and the
       ;; layout shows the composition, so its positions aren't the document's.
       :key    (let [{:keys [key mod] :or {mod 0}} event]
-                (cond composing? app
-                      (state/command? app) (command/on-key app now key)
-                      :else (or (some-> (cond (normal? app)       (modes/normal-key app key mod)
-                                              (state/insert? app) (modes/insert-key app key mod))
-                                        (as-> f (f app now)))
-                                (insets/cross app now key mod)
-                                (if (insets/over app)
-                                  (if (= sdl/K-ESCAPE key) (state/enter-mode app now :normal) app)
-                                  (in-text #(keyboard/on-key % now key mod))))))
+                (let [pressed (fn [app]
+                                (or (when (and (state/insert? app) (= key sdl/K-BACKSPACE)
+                                               (zero? (bit-and mod (bit-or sdl/KMOD-GUI sdl/KMOD-CTRL sdl/KMOD-ALT))))
+                                      (insets/backspace-into app now))
+                                    (some-> (cond (normal? app)       (modes/normal-key app key mod)
+                                                  (state/insert? app) (modes/insert-key app key mod))
+                                            (as-> f (f app now)))
+                                    (insets/cross app now key mod)
+                                    (if (insets/over app)
+                                      (if (= sdl/K-ESCAPE key) (state/enter-mode app now :normal) app)
+                                      (insets/in-view app #(keyboard/on-key % now key mod)))))]
+                  (cond composing? app
+                        (state/command? app) (command/on-key app now key)
+                        :else (or (xsel/on-key app now key mod pressed) (pressed app)))))
       ;; The scroll bar leaves the document alone, so it works while composing.
       ;; Boxes take the clicks on them, over the text and the scroll bar;
       ;; a click anywhere else gives up the focus. A click in an inset puts
       ;; the caret there, and one on its header folds or unfolds it.
       :click  (let [{:keys [x y]} event
+                    app   (-> app (dissoc :selecting? :xdrag) xsel/clear)
                     inset (when-not (ui/hit (:float-places app) x y) (insets/hit app x y))
                     hit   (boxes/ui-hit app x y)]
                 (cond
@@ -267,8 +278,9 @@
                                 :else (click (insets/leave app now))))))
       :drag   (cond (:grab app) (scroll/on-thumb-drag app (:y event))
                     composing? app
-                    :else (in-text #(mouse/on-drag % now (:x event) (:y event))))
-      :release (mouse/on-release app)
+                    :else (or (xsel/drag app now (:x event) (:y event))
+                              (in-text #(mouse/on-drag % now (:x event) (:y event)))))
+      :release (-> (mouse/on-release app) (dissoc :xdrag))
       :move   (-> (scroll/hover app (boolean (scroll/on-scrollbar? app (:x event))))
                   (boxes/hover (:x event) (:y event))
                   (assoc :pointer [(:x event) (:y event)]))
@@ -296,7 +308,7 @@
   [app event now]
   (let [;; once the editor font's wait is over, sync-view makes it
         app (if (some-> (:fonts-at app) (<= now)) (dissoc app :fonts-at) app)
-        app (sync/sync-view app)            ; navigation needs a fresh layout
+        app (sync/sync-view app now)        ; navigation needs a fresh layout
         ;; a message lasts until the next keystroke
         app (if (and (:message app) (#{:key :text} (:type event)))
               (-> app (dissoc :message) (assoc :dirty? true))
@@ -322,21 +334,24 @@
 ;; ---------------------------------------------------------------- the host's loop
 
 (defn settle
-  "Sync the view, then scroll as the last batch of events asked."
-  [app]
-  (sync/settle app))
+  "Sync the view, then scroll as the last batch of events asked. Given
+  the time, `now` (ms), a long text waits for a new width to hold before
+  it wraps to it (see hoatzin.app.sync/sync-size)."
+  ([app] (sync/settle app))
+  ([app now] (sync/settle app now)))
 
 (defn ms-until-wake
   "How long the host may sleep before sending a :tick: until the caret next
-  toggles, a held drag next scrolls, the editor font is to be applied or a
-  gliding dropdown list next moves, or indefinitely (-1) when nothing
-  changes without an event."
+  toggles, a held drag next scrolls, the editor font is to be applied, a
+  long text is to wrap to a new width, or a gliding dropdown list next
+  moves, or indefinitely (-1) when nothing changes without an event."
   [app now]
   (let [b (:blink-ms app)
         waits (cond-> []
                 (caret/caret-blinking? app) (conj (- b (mod (- now (:blink-from app)) b)))
                 (mouse/autoscrolling? app)  (conj (:autoscroll-ms app))
                 (:fonts-at app)             (conj (max 0 (- (:fonts-at app) now)))
+                (:wrap-at app)              (conj (max 0 (- (:wrap-at app) now)))
                 (dropdown/gliding? app)     (conj (:frame-ms app))
                 (scroll/gliding? app)       (conj (:frame-ms app)))]
     (if (seq waits) (reduce min waits) -1)))

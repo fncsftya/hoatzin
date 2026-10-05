@@ -6,9 +6,9 @@ A small modal text editor for macOS, written in [Jolt](https://github.com/jolt-l
 
 ## Features
 
-- Normal and insert modes (in normal mode, `k` deletes forwards and `cmd+k` the line), with a `:` command line (`:open`, `:write`, `:save`, `:quit`, `:buffers`, `:new`, `:close`, `:revert`, `:cd`, `:mode`, `:settings`)
+- Normal and insert modes (in normal mode, `k` deletes forwards and `cmd+k` the line; `c` and `x` copy and cut, leaving nothing selected; `m` sets the mark, selecting from it as you move, `ctrl+a` / `ctrl+e` and `cmd+m` go to the start, the end and the first non-blank of the line, and `j` jumps back to it, then to the marks before, as Emacs's `C-SPC` and `C-u C-SPC`), with a `:` command line (`:open`, `:write`, `:save`, `:quit`, `:buffers`, `:new`, `:close`, `:revert`, `:cd`, `:mode`, `:settings`)
 - Multiple buffers, listed by `:buffers`: `return` switches to one, `k` closes it (asking first if that could lose anything), `p` previews it, and `t` tags it with a short name in a pastel colour
-- Wrapped text, input-method composition, smooth scrolling
+- Wrapped text, input-method composition, smooth scrolling; drawn as the window is resized, a very long text re-wrapping once the size holds
 - Settings window (`:settings`) for the editor and UI fonts and the theme, saved as you change them
 
 ## Requirements
@@ -37,7 +37,7 @@ A file takes the mode for its extension as it is opened or saved; `:mode name` c
               {:id 2 :content ["In a box in a box."]}]}
   ```
 
-  Lists and checklists sit in the text the same way, an item to a line, saved as `{:type :list :content [{:text "an item"}]}` and `{:type :checklist :content [{:text "an item" :checked? true}]}`; a list's `:content` may hold lists too, after the item they are below. A section may have a `:title`.
+  A horizontal rule is `{:type :hr}`. Lists and checklists sit in the text the same way, an item to a line, saved as `{:type :list :content [{:text "an item"}]}` and `{:type :checklist :content [{:text "an item" :checked? true}]}`; a list's `:content` may hold lists too, after the item they are below. A section may have a `:title`.
 
   In normal mode:
 
@@ -49,6 +49,7 @@ A file takes the mode for its extension as it is opened or saved; `:mode name` c
   | `cmd+r` | renames the section in its header: return, up or down keep the name, esc gives it up |
   | `l` / `ctrl+l` | adds a list / a checklist, as `cmd+s` adds a section; in a list, a sublist below the item |
   | `t` | ticks or unticks the checklist item the caret is in (or click its box) |
+  | `h` | adds a horizontal rule below the line, as `cmd+s` adds a section, and moves to the line after it; the caret steps over it, and `cmd+shift+k` there deletes it |
   | `k` | deletes forwards, or the selection; not a section or list after the line |
   | `tab` | in a list: indents the item, then takes it out to the list holding its list, then puts it back |
 
@@ -56,7 +57,9 @@ A file takes the mode for its extension as it is opened or saved; `:mode name` c
 
   In insert mode, `cmd+l` and `cmd+ctrl+l` add a list and a checklist, `tab` is as in normal mode, `return` on an empty last item leaves the list for a new line after it, and `shift+return` leaves every list the caret is in.
 
-  Up and down move into and out of sections, and over folded ones, a section shows ten lines and scrolls past that, and clicking its header folds it.
+  `cmd+shift+o` adds a new line above the section or list the caret is in, in the text that holds it (on any other line it is `shift+o`). Up and down move into and out of sections, over folded ones, and, at the top of a text that starts with a section or list, before it; a section shows ten lines and scrolls past that, and clicking its header folds it.
+
+  A selection is one across all of it: shift with the arrows takes in the lists and sections between, and the text in them, `cmd+a` selects everything, `cmd+shift+a` all that is in the section or list the caret is in, and copying, cutting and deleting work on the whole of it (the sections and lists that are all of it go).
 
 Your own go in `modes` in `hoatzin` under `$XDG_CONFIG_HOME`, one `.clj` file each.
 

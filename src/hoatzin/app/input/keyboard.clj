@@ -1,6 +1,10 @@
 (ns hoatzin.app.input.keyboard
   "Keys and typing in the text. In :normal mode the text is left alone:
   keys move the caret and select, and typed text is a command (`i`, `:`).
+  As in Emacs, `m` sets the mark at the caret, and makes it active: the
+  keys that move the caret then select from it, as with shift, until
+  escape, an edit or a click. `j` jumps back to the mark, and the mark
+  before it becomes the mark, so that `j` again goes on back.
   In :insert mode typing edits the text, as does the input method's
   composition, and escape goes back to :normal."
   (:require [hoatzin.app.command :as command]
@@ -98,6 +102,27 @@
         (assoc app :message (str "Copied " (characters (count s))) :dirty? true))
     app))
 
+(defn- deselect
+  "The app with nothing selected, the caret where it is, and the mark
+  not active."
+  [app now]
+  (-> app (update :doc #(ed/move % (:caret %))) (dissoc :selecting?) (touched now)))
+
+(defn- set-mark
+  "Set the mark at the caret, and make it active: see the ns doc."
+  [app now]
+  (-> app
+      (update :doc #(-> % (ed/move (:caret %)) ed/set-mark))
+      (assoc :selecting? true :message "Mark set")
+      (touched now)))
+
+(defn- jump-to-mark
+  "Jump back to the mark: see the ns doc."
+  [app now]
+  (if-let [doc (ed/jump-to-mark (:doc app))]
+    (-> app (assoc :doc doc :goal-x nil :upstream? false) (dissoc :selecting?) (touched now))
+    (assoc app :message "No mark set" :dirty? true)))
+
 (defn- cut!
   "Cut the selection to the clipboard, and say so."
   [app now]
@@ -127,7 +152,8 @@
         sel    (ed/selection doc)
         end    (count text)
         cmd?   (pos? (bit-and mod sdl/KMOD-GUI))
-        shift? (pos? (bit-and mod sdl/KMOD-SHIFT))
+        ;; the mark active, the keys that move the caret select, as shift does
+        shift? (or (pos? (bit-and mod sdl/KMOD-SHIFT)) (boolean (:selecting? app)))
         ctrl?  (pos? (bit-and mod sdl/KMOD-CTRL))
         ;; Shift moves the caret and drags the selection along. Otherwise a
         ;; selection collapses: keys going back start from its start, keys
@@ -138,9 +164,13 @@
         to-line-start #(go (layout/line-start L (line-of %)))
         to-line-end #(let [k (line-of %)]
                        (move-on-line app now shift? k (layout/line-end L k)))
+        to-first-non-blank #(let [[start end] (logical-line text %)
+                              t (text/of text)]
+                              (go (loop [j start]
+                                    (if (and (< j end) (Character/isWhitespace (text/char-at t j))) (recur (inc j)) j))))
         page (max 1 (quot (view-height app) (layout/line-height L)))]
     (condp = key
-      sdl/K-ESCAPE    (cond-> app
+      sdl/K-ESCAPE    (cond-> (dissoc app :selecting?)
                         sel          (-> (assoc :doc (ed/move doc caret)) (touched now))
                         (insert? app) (enter-mode now :normal))
       sdl/K-BACKSPACE (cond sel        (edit app now ed/delete (first sel) (second sel))
@@ -165,9 +195,14 @@
       sdl/K-PAGEUP    (move-lines app now shift? back (- page))
       sdl/K-PAGEDOWN  (move-lines app now shift? fwd page)
       sdl/K-A         (cond cmd?  (-> app (assoc :doc (ed/select-all doc) :goal-x nil) (touched now))
-                            ctrl? (if (insert? app) (to-line-start caret) app)
+                            ctrl? (to-line-start caret)
                             :else app)
-      sdl/K-E         (if (and ctrl? (insert? app)) (to-line-end caret) app)
+      sdl/K-E         (if ctrl? (to-line-end caret) app)
+      sdl/K-M         (if cmd? (to-first-non-blank caret) app)
+      ;; cmd+shift+o: a line above, as O makes, for a mode with nothing better
+      sdl/K-O         (if (and cmd? (pos? (bit-and mod sdl/KMOD-SHIFT)) (normal? app))
+                        (open-line app now true)
+                        app)
       sdl/K-C         (if cmd? (copy! app) app)
       sdl/K-K         (if (and cmd? (not shift?) (normal? app)) (insets/delete-line app now) app)
       sdl/K-X         (if (and cmd? (insert? app)) (cut! app now) app)
@@ -185,6 +220,8 @@
     :insert  (edit (dissoc app :composition) now ed/insert text)
     :command (command/on-text app now text)
     (case text
+      "m" (set-mark app now)
+      "j" (jump-to-mark app now)
       "i" (enter-mode app now :insert)
       "a" (let [{:keys [text caret] :as doc} (:doc app)
                 pos (if-let [[_ hi] (ed/selection doc)]
@@ -198,17 +235,10 @@
               (enter-mode now :insert))
       "o" (open-line app now false)
       "O" (open-line app now true)
-      "c" (copy! app)
-      "x" (cut! app now)
-      "k" (delete-forward app now)
-      "p" (paste! app now)
-      "0" (move-to app now false (first (logical-line (:text (:doc app)) (:caret (:doc app)))))
-      "^" (let [{:keys [text caret]} (:doc app)
-                [start end] (logical-line text caret)
-                t (text/of text)]
-            (move-to app now false
-                     (loop [j start]
-                       (if (and (< j end) (Character/isWhitespace (text/char-at t j))) (recur (inc j)) j))))
+      "c" (deselect (copy! app) now)
+      "x" (deselect (cut! app now) now)
+      "k" (delete-forward (dissoc app :selecting?) now)
+      "p" (paste! (dissoc app :selecting?) now)
       "w" (select-with app now ed/word-range)
       "s" (select-with app now ed/sentence-range)
       ":" (command/open-line app now)

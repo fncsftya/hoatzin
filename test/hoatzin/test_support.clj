@@ -239,7 +239,7 @@
   [s & events]
   ;; Not inside swap!: handling may write the clipboard, which is in `s` too.
   (let [{:keys [now app]} @s]
-    (swap! s assoc :app (app/settle (reduce #(app/handle %1 %2 now) app events))))
+    (swap! s assoc :app (app/settle (reduce #(app/handle %1 %2 now) app events) now)))
   s)
 
 (defn type!
@@ -308,7 +308,7 @@
   (swap! s (fn [{:keys [canvas density] :as st}]
              (let [st (assoc st :canvas (resize-canvas canvas (long (* width density))
                                                        (long (* height density))))]
-               (assoc st :app (app/settle (:app st))))))
+               (assoc st :app (app/settle (:app st) (:now st))))))
   s)
 
 (defn render!

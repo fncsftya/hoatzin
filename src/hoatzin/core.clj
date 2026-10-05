@@ -6,6 +6,7 @@
             [jolt.ffi :as ffi]
             [hoatzin.app :as app]
             [hoatzin.lib.coretext :as ct]
+            [hoatzin.lib.macos :as macos]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.app.settings :as settings]))
 
@@ -184,8 +185,45 @@
         [x y w h] (app/caret-rect app)]
     (sdl/set-text-input-area window (sdl/set-rect! irect (/ x d) (/ y d) (max 1 (/ w d)) (/ h d)) 0)))
 
+(defn- draw-now!
+  "Draw the app in `latest`, settled, at its window's size now, if it needs
+  it, and keep what drawing made of it."
+  [window latest irect]
+  (let [now (sdl/get-ticks)
+        app (app/settle @latest now)
+        app (if (app/needs-draw? app now)
+              (let [app (app/draw! app now)]
+                (set-input-area! window app irect)
+                app)
+              app)]
+    (reset! latest app)))
+
+;; While the window is dragged to a new size, macOS runs a loop of its own
+;; inside SDL's, and ours waits: what it showed last would be stretched to
+;; fit. SDL calls an event watch from that loop, on this thread, with an
+;; expose event for each new size, and the app is drawn from there. So the
+;; app is always the one in `latest`: the loop puts it there before each
+;; wait and poll, in which the watch may draw it, and takes it back after.
+
+(defn- live-resize-watch
+  "An SDL event watch drawing the app in `latest` as the window is
+  live-resized."
+  [window latest irect]
+  (ffi/callback (ffi/global-arena)
+                (fn [_ e]
+                  (when (and (= sdl/EVENT-WINDOW-EXPOSED (ffi/read e :uint sdl/O-event-type))
+                             (= 1 (ffi/read e :int sdl/O-window-data1)))
+                    ;; nothing may be thrown back through SDL
+                    (try (reset! latest (app/handle @latest {:type :expose} (sdl/get-ticks)))
+                         (draw-now! window latest irect)
+                         (catch Exception e
+                           (binding [*out* *err*] (println "Can't draw while resizing:" (ex-message e))))))
+                  true)
+                [:pointer :pointer] :bool :collect-safe))
+
 (defn- run-loop
-  "Run until quit. `latest` always holds the current app, for cleanup.
+  "Run until quit. `latest` always holds the current app, for cleanup, and
+  for drawing as the window is live-resized (see `live-resize-watch`).
   `cursors` maps hoatzin.app/pointer's answers to SDL cursors; `data` is
   the minor modes' data, from `mode-data`."
   [window latest dialogs data ev irect cursors]
@@ -201,23 +239,18 @@
                  (if user?
                    (reduce #(app/handle %1 %2 (sdl/get-ticks)) app ((:take! data)))
                    app)))]
-    (loop [app @latest, shown-pointer nil]
-      (reset! latest app)
-      (when-not (:quit? app)
-        (let [app (if (sdl/wait-event-timeout ev (app/ms-until-wake app (sdl/get-ticks)))
-                    (loop [app (step app)]
-                      (if (sdl/poll-event ev) (recur (step app)) app))
-                    (app/handle app {:type :tick} (sdl/get-ticks)))
-              app (app/settle app)
-              now (sdl/get-ticks)
-              pointer (app/pointer app)]
+    (loop [shown-pointer nil]
+      (when-not (:quit? @latest)
+        (if (sdl/wait-event-timeout ev (app/ms-until-wake @latest (sdl/get-ticks)))
+          ;; not swap!: a step has effects, which a retry would repeat
+          (do (reset! latest (step @latest))
+              (while (sdl/poll-event ev) (reset! latest (step @latest))))
+          (reset! latest (app/handle @latest {:type :tick} (sdl/get-ticks))))
+        (draw-now! window latest irect)
+        (let [pointer (app/pointer @latest)]
           (when-not (= pointer shown-pointer)
             (sdl/set-cursor (cursors pointer)))
-          (if (app/needs-draw? app now)
-            (let [app (app/draw! app now)]
-              (set-input-area! window app irect)
-              (recur app pointer))
-            (recur app pointer)))))))
+          (recur pointer))))))
 
 (defn -main [& _args]
   ;; We draw the composition (marked text) ourselves: SDL then sends it as
@@ -234,6 +267,8 @@
                            pwin pren)
                           "SDL_CreateWindowAndRenderer")
               [(ffi/read pwin :pointer) (ffi/read pren :pointer)]))
+          ;; cmd+m is the editor's (first non-blank), not Minimize's
+          _       (try (macos/free-keys! "Minimize") (catch Exception _ nil))
           cursors {:text  (sdl/create-system-cursor sdl/SYSTEM-CURSOR-TEXT)
                    :arrow (sdl/create-system-cursor sdl/SYSTEM-CURSOR-DEFAULT)}
           latest (atom nil)
@@ -266,7 +301,11 @@
                                                            (str/join "; "))
                                     :now          (sdl/get-ticks)}))
         (with-open [a (ffi/confined-arena)]
-          (run-loop window latest dialogs data (ffi/alloc a sdl/EVENT-SIZE) (ffi/alloc a sdl/rect) cursors))
+          (let [irect (ffi/alloc a sdl/rect)
+                watch (live-resize-watch window latest irect)]
+            (sdl/add-event-watch watch ffi/null)
+            (try (run-loop window latest dialogs data (ffi/alloc a sdl/EVENT-SIZE) irect cursors)
+                 (finally (sdl/remove-event-watch watch ffi/null)))))
         (finally
           (some-> @latest app/destroy!)
           (run! sdl/destroy-cursor (vals cursors))

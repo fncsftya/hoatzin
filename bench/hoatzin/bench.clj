@@ -198,6 +198,13 @@
     :run (fn [_ _ i] [(key-ev sdl/K-BACKSPACE) (text-ev (str (+ 1 (mod i 2))))])}
    {:name "step font-size lines" :doc "lines" :n 40 :setup to-font-size!
     :run (fn [_ _ i] [(key-ev (if (even? i) sdl/K-UP sdl/K-DOWN))])}
+   ;; the window dragged narrower and wider, as a live resize does, a new
+   ;; width each step
+   {:name "resize lines" :doc "lines" :n 40 :setup to-middle!
+    ;; only the canvas, before the step: the step's settle lays the text out
+    :run (fn [s _ i]
+           (swap! s update :canvas #(#'t/resize-canvas % (* 2 (- 800 (* 7 (inc (mod i 20))))) 1200))
+           [{:type :expose}])}
    ;; and the font applying, once the size has been left alone
    {:name "apply font-size lines" :doc "lines" :n 20 :setup to-font-size!
     :run (fn [s _ i]

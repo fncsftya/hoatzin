@@ -10,6 +10,10 @@
   as it is edited: what is inserted before a mark pushes it along, and a
   mark inside text that is deleted lands where the deletion was.
 
+  The mark, after Emacs, is one of them: :mark the id of the mark (under
+  [:mark id] in :marks), and :mark-ring the ids of the marks before it,
+  the newest last.
+
   The text is a hoatzin.lib.text rope, so edits cost the same however long the
   document is."
   (:require [hoatzin.lib.text :as text]))
@@ -79,6 +83,32 @@
     (if (= anchor pos)
       (move doc pos)
       (assoc doc :anchor anchor :caret pos))))
+
+(def mark-ring-max "The most marks the mark ring keeps, as Emacs's." 16)
+
+(defn set-mark
+  "Set the mark at the caret, the mark before it going onto the mark
+  ring, as Emacs's C-SPC does. Past `mark-ring-max`, the oldest goes."
+  [{:keys [caret] :as doc}]
+  (let [id   (:next-mark doc 0)
+        ring (cond-> (:mark-ring doc []) (:mark doc) (conj (:mark doc)))
+        [gone ring] (if (> (count ring) mark-ring-max) [(first ring) (subvec ring 1)] [nil ring])]
+    (-> doc
+        (cond-> gone (unmark [:mark gone]))
+        (mark [:mark id] caret)
+        (assoc :mark id :next-mark (inc id) :mark-ring ring))))
+
+(defn jump-to-mark
+  "Move the caret to the mark, and make the newest mark of the mark ring
+  the mark, the mark going to the ring's far end, as Emacs's C-u C-SPC
+  does; nil if there is no mark."
+  [doc]
+  (when-let [id (:mark doc)]
+    (let [doc  (move doc (get-in doc [:marks [:mark id]]))
+          ring (:mark-ring doc [])]
+      (if (seq ring)
+        (assoc doc :mark (peek ring) :mark-ring (into [id] (pop ring)))
+        doc))))
 
 (defn- char-class [c]
   (cond (= c \newline)            :newline

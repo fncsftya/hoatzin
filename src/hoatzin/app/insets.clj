@@ -8,6 +8,9 @@
                 scrolls past that
     :list       a bullet before each paragraph, its items
     :checklist  a box before each, ticked or not, as its :checked has it
+    :rule       a horizontal line across the text, as HTML's <hr>: it has
+                no text, and is always folded, so the caret goes over it
+                as over a folded section
   Modes make them (see hoatzin.app.modes): auk mode's sections and lists
   are insets.
 
@@ -54,23 +57,25 @@
 (def ^:private thumb-width "Points: the scroll thumb of a section that scrolls." 3)
 (def gutter "Points: a list's room for its bullets or boxes, at its left." 22)
 (def ^:private list-pad-y "Points above and below a list's text." 2)
+(def ^:private rule-pad-y "Points above and below a rule's line." 8)
 
 (def text-keys
   "What a level holds: its text as it is edited, and how far down it is
   scrolled, in pixels; a view of an inset takes them from the inset and
   gives them back."
   [:doc :undo :undo-tail :undo-chain :goal-x :upstream? :composition
-   :insets :inset :next-inset-id :scroll])
+   :insets :inset :before? :next-inset-id :scroll])
 
 (def ^:private view-keys
   "What a view of an inset has of its own besides `text-keys`, from the
   inset and where it is placed."
   [:layout :ctx :block-places :origin :view-h :view-w :clip])
 
-(defn- mark-id [id] [:inset id])
+(defn mark-id [id] [:inset id])
 
 (defn kind "Inset `i`'s kind." [i] (:kind i :section))
 (defn section? [i] (= :section (kind i)))
+(defn rule? [i] (= :rule (kind i)))
 
 (defn- across
   "Render pixels inset `i` takes across, beside its text."
@@ -101,9 +106,23 @@
       found)))
 
 (defn over
-  "The folded inset the caret is over, or nil."
+  "The inset the caret is over, or nil: a folded one, or one the caret is
+  before (see `before`)."
   [app]
-  (let [i (innermost app)] (when (:collapsed? i) i)))
+  (loop [level app]
+    (when-let [i (some->> (:inset level) (get (:insets level)))]
+      (cond (and (:inset i) (not (:before? level))) (recur i)
+            (or (:collapsed? i) (:before? level))    i))))
+
+(defn before
+  "The inset the caret is before, or nil: a caret put where there is no
+  line above an inset to put it on, as at the top of a text that starts
+  with one, by going up from its first line. The inset's header, or its
+  list, shows it, as when the caret is over a folded one."
+  [app]
+  (loop [level app]
+    (when-let [i (some->> (:inset level) (get (:insets level)))]
+      (if (:before? level) i (recur i)))))
 
 (defn path
   "The ids of the insets the caret is in, or over, down from the buffer's
@@ -181,7 +200,7 @@
   [level pos]
   (first (text/line-at (text/of (get-in level [:doc :text])) pos)))
 
-(defn- ordered
+(defn ordered
   "`level`'s insets, in order down its text, each with :after, the
   paragraph it is below (-1: above the first)."
   [level]
@@ -211,6 +230,7 @@
   (let [doc (ed/doc (or text ""))]
     (cond-> {:id id :order order :above? above? :scroll 0 :doc doc :insets {} :next-inset-id 0}
       kind  (assoc :kind kind)
+      (= :rule kind) (assoc :collapsed? true)
       title (assoc :title title)
       (= :checklist kind) (assoc :checked (fit-checks (:text doc) checked) :checked-text (:text doc)))))
 
@@ -246,7 +266,7 @@
   "`level` with the caret out of the insets in it, their selections gone."
   [level]
   (if-let [id (:inset level)]
-    (cond-> (dissoc level :inset)
+    (cond-> (dissoc level :inset :before?)
       ;; an inset gone already has nothing to leave
       (get-in level [:insets id]) (update-in [:insets id] #(-> % leave-all (update :doc collapse))))
     level))
@@ -318,13 +338,19 @@
         (merge (select-keys level ks))
         (update-in [:insets id] #(merge (apply dissoc % text-keys) (select-keys v text-keys))))))
 
+(defn- caret-view
+  "`view` of `level`'s inset `id`, unless the caret is before it: then the
+  caret isn't in its text."
+  [level id]
+  (when-not (:before? level) (view level id)))
+
 (defn in-view
   "`f` of the text with the caret: of a view of the inset it is in, at the
-  end of the chain (see `view`), else of the app. Over a folded inset, of
-  the text that holds that."
+  end of the chain (see `view`), else of the app. Over a folded inset, or
+  before one, of the text that holds that."
   [app f]
   (if-let [id (:inset app)]
-    (if-let [v (view app id)]
+    (if-let [v (caret-view app id)]
       (unview app id (in-view v f))
       (f app))
     (f app)))
@@ -345,7 +371,7 @@
   ([level k level-kind f]
    (if-let [id (:inset level)]
      (let [i (get-in level [:insets id])]
-       (if-let [v (and (holds? i k) (view level id))]
+       (if-let [v (and (holds? i k) (caret-view level id))]
          (unview level id (in-holding v k (kind i) f))
          (f level level-kind)))
      (f level level-kind))))
@@ -355,7 +381,7 @@
   the app (or the text holding the inset it is over)."
   [app]
   (loop [level app]
-    (if-let [v (some->> (:inset level) (view level))] (recur v) level)))
+    (if-let [v (some->> (:inset level) (caret-view level))] (recur v) level)))
 
 ;; ---------------------------------------------------------------- adding and removing
 
@@ -369,7 +395,8 @@
       unless there is a line after it already;
     - on an empty line, in that line's place, the line after it;
     - else below the line the caret is in, after any others there, with a
-      new line after it, unless there is one already."
+      new line after it, unless there is one already.
+  A rule has no text to go into: the caret goes to the line after it."
   [level level-kind now spec]
   (let [id  (:next-inset-id level 0)
         old (:doc level)
@@ -402,7 +429,13 @@
         (update :doc ed/mark (mark-id id) pos)
         (assoc-in [:insets id] (fresh id order above? spec))
         (assoc :next-inset-id (inc id))
-        (enter now id))))
+        (as-> level
+          (if (rule? spec)
+            (-> (leave level now)
+                (update :doc ed/move (if in-place? start (inc end)))
+                (assoc :goal-x nil :upstream? false)
+                (touched now))
+            (enter level now id))))))
 
 (defn add
   "A new inset of `spec`, {:text s :kind k ...} (see `fresh`), or of
@@ -603,7 +636,7 @@
          (assoc :next-inset-id (inc id)))
      id]))
 
-(defn- caret-to
+(defn caret-to
   "The app with the caret in the text at `path` (the buffer's, for an
   empty one), at `pos`."
   [app path pos]
@@ -703,17 +736,33 @@
                                     :text (get-in l [:doc :text]) :caret (get-in l [:doc :caret])))
           (touched now)))))
 
+(defn- line-after
+  "`app` with a new line in the text at `outer` just after the inset
+  below paragraph `a` (-1: above the first), and the caret in it."
+  [app now outer a]
+  (let [app (at app outer
+                (fn [o]
+                  (let [old (:doc o)
+                        t (text/of (:text old))
+                        pos (if (neg? a) 0 (second (bounds t a)))]
+                    (-> o
+                        (assoc :doc (-> old (ed/move pos) (ed/insert "\n")))
+                        (history/record (ed/move old pos) pos pos "\n")))))
+        t (text/of (get-in (level-at app outer) [:doc :text]))]
+    (touched (caret-to app outer (if (neg? a) 0 (text/line-start t (inc a)))) now)))
+
 (defn list-return
   "Return in a list: on its last item, if that is empty, the item goes
-  and the caret leaves the list (`all?`: every list it is in, on any
-  item) for a new line just after it, in the text that held it. nil
-  otherwise, or if the caret isn't in a list."
+  and the caret leaves the list for a new line just after it, in the text
+  that held it. With `all?` (shift+return) it leaves every list the caret
+  is in, from any item, and nothing goes: the item, and the lists below
+  it, stay. nil otherwise, or if the caret isn't in a list."
   [app now all?]
   (when-let [[path k] (item-of app)]
     (let [l (inset-at app path)
           t (text/of (get-in l [:doc :text]))
           n (text/line-count t)
-          empty-last? (and (= k (dec n)) (= "" (text/line t k)))]
+          empty-last? (and (not all?) (= k (dec n)) (= "" (text/line t k)))]
       (when (or all? empty-last?)
         (let [;; the lists left, from the outermost
               lists (if all?
@@ -724,17 +773,73 @@
               a     (:after (some #(when (= (peek top) (:id %)) %) (ordered (level-at app outer))))
               app   (cond (not empty-last?) app
                           (= 1 n) (remove-inset app now path)
-                          :else (at app path #(first (take-item % k))))
-              app   (at app outer
-                        (fn [o]
-                          (let [old (:doc o)
-                                t (text/of (:text old))
-                                pos (if (neg? a) 0 (second (bounds t a)))]
-                            (-> o
-                                (assoc :doc (-> old (ed/move pos) (ed/insert "\n")))
-                                (history/record (ed/move old pos) pos pos "\n")))))
-              t     (text/of (get-in (level-at app outer) [:doc :text]))]
-          (touched (caret-to app outer (if (neg? a) 0 (text/line-start t (inc a)))) now))))))
+                          :else (at app path #(first (take-item % k))))]
+          (line-after app now outer a))))))
+
+(defn leave-inset
+  "Shift+return: a new line just after the list or section the caret is in
+  (every list it is in, but only the innermost section), in the text that
+  holds it, and the caret there; nothing in them is touched. nil if the
+  caret isn't in an inset."
+  [app now]
+  (or (list-return app now true)
+      (when-let [p (path app)]
+        (let [outer (pop p)
+              a     (:after (some #(when (= (peek p) (:id %)) %) (ordered (level-at app outer))))]
+          (line-after app now outer a)))))
+
+(defn- last-position
+  "[path pos] of the end of inset level `i`'s text, in the last inset in
+  it, at any depth, or nil if that is folded or a rule."
+  [i path]
+  (let [t  (text/of (get-in i [:doc :text]))
+        k  (dec (text/line-count t))
+        in (last (filter #(= k (:after %)) (ordered i)))]
+    (cond (nil? in) [path (second (bounds t k))]
+          (or (:collapsed? in) (rule? in)) nil
+          :else (last-position (get-in i [:insets (:id in)]) (conj path (:id in))))))
+
+(defn backspace-into
+  "Backspace at the start of a line with an inset above it, in insert
+  mode: the line goes up into it, as if the end of the inset's text were
+  the line above, joining its last line, and the caret goes to the join.
+  nil unless that is where the caret is."
+  [app now]
+  (when-let [p (and (not (over app)) (vec (path app)))]
+    (let [l   (level-at app p)
+          doc (:doc l)
+          t   (text/of (:text doc))
+          [k start line] (text/line-at t (:caret doc))
+          n   (text/line-count t)
+          up  (last (filter #(= (dec k) (:after %)) (ordered l)))
+          dest (when (and (nil? (:anchor doc)) (= (:caret doc) start) up (not (:collapsed? up)) (not (rule? up)))
+                 (last-position (get-in l [:insets (:id up)]) (conj p (:id up))))]
+      (when dest
+        (let [[dpath dpos] dest
+              [lo hi] (cond (= n 1) [0 (count line)]
+                            (pos? k) [(dec start) (+ start (count line))]
+                            :else [0 (inc (count line))])
+              later (filter #(= k (:after %)) (ordered l))
+              base  (reduce max -1 (map :order (filter #(= (dec k) (:after %)) (ordered l))))
+              app   (at app p
+                        (fn [l]
+                          (let [new (-> l
+                                        (assoc :doc (ed/delete doc lo hi) :goal-x nil :upstream? false)
+                                        (history/record doc lo hi ""))]
+                            ;; what was below the line goes below what is now above it
+                            (reduce (fn [l [j i]]
+                                      (cond-> (assoc-in l [:insets (:id i) :order] (+ base 1 j))
+                                        (zero? k) (assoc-in [:insets (:id i) :above?] true)))
+                                    new (map-indexed vector (when (< 1 n) later))))))
+              app   (if (seq line)
+                      (at app dpath
+                          (fn [d]
+                            (let [old (:doc d)]
+                              (-> d
+                                  (assoc :doc (ed/insert (ed/move old dpos) line))
+                                  (history/record (ed/move old dpos) dpos dpos line)))))
+                      app)]
+          (touched (caret-to app dpath dpos) now))))))
 
 (defn- tick-at
   "`level` with the item of its checklist `id` at render y `y` ticked or
@@ -823,7 +928,7 @@
   placed in it, as it shows."
   [level i title]
   (let [folded? (folded? i)
-        over?   (and (:collapsed? i) (= (:id i) (:inset level)))
+        over?   (and (or (:collapsed? i) (:before? level)) (= (:id i) (:inset level)))
         first-line (first (text/lines (text/of (get-in i [:doc :text])) 0 1))
         n (when (:layout i) (layout/line-count (:layout i)))
         name (cond (:renaming i) (:renaming i)
@@ -848,11 +953,24 @@
               :style {:padding [pad-y pad-x]
                       :height (+ (/ (shown-height i) (:density level)) (* 2 pad-y))}}))}))
 
+(defn- rule-node
+  "Rule `i` of `level` as a box: a line across the text, room above and
+  below it, highlighted while the caret is over it."
+  [level i]
+  (let [over? (= (:id i) (:inset level))]
+    {:kind :box :inset-header (:id i)
+     :style {:padding [rule-pad-y 0]
+             :background (if over? (:ui-highlight level) (:background level))}
+     :children [{:kind :box :style {:height 1 :background (if over? (:ui-focus level) (:ui-border level))}}]}))
+
 (defn- list-node
   "List or checklist `i` as a box: its text, with room at its left for its
-  bullets or boxes, which are drawn with it."
+  bullets or boxes, which are drawn with it; highlighted while the caret
+  is before it."
   [level i]
   {:kind :box
+   :style (when (and (:before? level) (= (:id i) (:inset level)))
+            {:background (:ui-highlight level)})
    :children [{:kind :box :inset-body (:id i)
                :style {:padding [list-pad-y 0 list-pad-y gutter]
                        :height (+ (/ (shown-height i) (:density level)) (* 2 list-pad-y))}}]})
@@ -870,7 +988,9 @@
               (when (or (:layout i) (:collapsed? i))
                 (let [pos (display/shown-pos level pos)]
                   {:id (mark-id (:id i)) :inset (:id i) :pos pos :order (:order i)
-                   :node (if (section? i) (section-node level i title) (list-node level i))
+                   :node (cond (section? i) (section-node level i title)
+                               (rule? i)    (rule-node level i)
+                               :else        (list-node level i))
                    :line (if (:above? i) (dec (layout/first-line L pos)) (layout/last-line L pos))}))))
           (vals (:insets level)))))
 
@@ -900,7 +1020,7 @@
   it is in, if any, as placed there, or the top of the one it is over."
   [level]
   (if-let [id (:inset level)]
-    (if-let [v (view level id)]
+    (if-let [v (caret-view level id)]
       (let [[_ ty] (:text (place-of level id))]
         (+ ty (- (caret-top v) (:scroll v))))
       (or (:top (place-of level id)) 0))
@@ -910,7 +1030,7 @@
   "Scroll the insets the caret is in, from the innermost out, just enough
   to show its line."
   [level]
-  (if-let [v (some->> (:inset level) (view level))]
+  (if-let [v (some->> (:inset level) (caret-view level))]
     (let [v  (follow v)
           lh (layout/line-height (:layout v))
           top (caret-top v)
@@ -986,21 +1106,25 @@
   the folded inset it is over), each [level path], as views."
   [app]
   (loop [level app, pre [], out [[app []]]]
-    (if-let [v (some->> (:inset level) (view level))]
+    (if-let [v (some->> (:inset level) (caret-view level))]
       (let [pre (conj pre (:inset level))] (recur v pre (conj out [v pre])))
       out)))
 
 (defn- next-stop
   "The stop the caret goes to down (or up), from `chain`, its texts, the
   caret on line `k` of the innermost, or over its inset `from`; nil if
-  there is none."
-  [chain k from down?]
-  (let [[level pre] (peek chain)]
-    (or ((if down? next-in prev-in) level pre k from)
-        (when (> (count chain) 1)
-          (let [outer (pop chain)
-                id    (peek pre)]
-            (next-stop outer (:line (place-of (first (peek outer)) id)) id down?))))))
+  there is none. Going up out of the text of an inset (`inside?`) that has
+  nothing above it, where it is held, the stop is before it."
+  ([chain k from down?] (next-stop chain k from down? false))
+  ([chain k from down? inside?]
+   (let [[level pre] (peek chain)]
+     (or ((if down? next-in prev-in) level pre k from)
+         (when (and inside? (not down?) from (= -1 k))
+           [(conj pre from) :before])
+         (when (> (count chain) 1)
+           (let [outer (pop chain)
+                 id    (peek pre)]
+             (next-stop outer (:line (place-of (first (peek outer)) id)) id down? true)))))))
 
 (defn- chain-to
   "The app with the caret in the text at `path`, or over the folded inset
@@ -1012,36 +1136,92 @@
 
 (defn- go-stop
   "The caret to `stop`, nearest render x `x`: on its line, or over its
-  header."
+  header, or before its inset."
   [app now [q k] x]
   (let [app (chain-to app q)]
-    (if (= :header k)
+    (if (#{:header :before} k)
       (let [holder (innermost-view app)]
-        (-> (at app (pop q) #(assoc % :goal-x (- x (first (geo/origin holder)))))
+        (-> (at app (pop q) #(cond-> (assoc % :goal-x (- x (first (geo/origin holder))))
+                               (= :before k) (assoc :before? true)))
             (touched now)))
       (in-view app (fn [v]
                      (let [x (- x (first (geo/origin v)))]
                        (move-on-line v now false k (layout/position-at (:layout v) k x) x)))))))
 
+(defn stop-from
+  "Where up or down goes from the caret: [stop x level-path over-id], the
+  stop (see above), render x it aims for, the path of the text the caret
+  is in, or holding the inset it is over, and the id of that inset; nil if
+  there is none."
+  [app down?]
+  (let [chain   (chain app)
+        [level pre] (peek chain)
+        over-id (when (over app) (:inset level))
+        [cx k]  (if over-id
+                  [(first (geo/caret-place level)) (:line (place-of level over-id))]
+                  (geo/caret-place level))
+        x       (+ (first (geo/origin level)) (or (:goal-x level) cx))
+        stop    (if (and over-id (:before? level) down?)
+                  ;; before an inset, down goes into it
+                  (when-let [b (some #(when (= over-id (:inset %)) %) (:block-places level))]
+                    (stop-into level pre b false))
+                  (next-stop chain k over-id down?))]
+    (when stop [stop x pre over-id])))
+
 (defn cross
   "Up or down `key`, without modifiers: the caret to the visual line above
-  or below, whatever text it is in, or over a folded inset's header, at
-  any depth; nil if that is the next line of the text it is in already,
-  as the keys move it there themselves, or there is none."
+  or below, whatever text it is in, or over a folded inset's header, or
+  before an inset with nothing above it, at any depth; nil if that is the
+  next line of the text it is in already, as the keys move it there
+  themselves, or there is none."
   [app now key mod]
   (when (and (zero? (bit-and mod (bit-or sdl/KMOD-SHIFT sdl/KMOD-GUI sdl/KMOD-CTRL)))
              (or (= key sdl/K-UP) (= key sdl/K-DOWN)))
-    (let [down?   (= key sdl/K-DOWN)
-          chain   (chain app)
-          [level pre] (peek chain)
-          over-id (when (over app) (:inset level))
-          [cx k]  (if over-id
-                    [(first (geo/caret-place level)) (:line (place-of level over-id))]
-                    (geo/caret-place level))
-          x       (+ (first (geo/origin level)) (or (:goal-x level) cx))
-          [q k2 :as stop] (next-stop chain k over-id down?)]
-      (when (and stop (not (and (nil? over-id) (= q pre) (number? k2))))
+    (when-let [[[q k2 :as stop] x pre over-id] (stop-from app (= key sdl/K-DOWN))]
+      (when-not (and (nil? over-id) (= q pre) (number? k2))
         (go-stop app now stop x)))))
+
+(defn go
+  "The caret to `stop`, as `stop-from` gave it, aiming for render x `x`."
+  [app now stop x]
+  (go-stop app now stop x))
+
+;; ---------------------------------------------------------------- a line above
+
+(defn- line-above-here
+  "`level` with a new, empty line above its inset `id`, between it and
+  what is above it: the inset and those after it at its paragraph go below
+  the new line. The caret goes to the new line."
+  [level id]
+  (let [old   (:doc level)
+        t     (text/of (:text old))
+        all   (ordered level)
+        i     (some #(when (= id (:id %)) %) all)
+        after (:after i)
+        moved (filter #(and (= after (:after %)) (>= (:order %) (:order i))) all)
+        pos   (if (neg? after) 0 (second (bounds t after)))
+        ;; what is at 0 and not above the first paragraph is below the
+        ;; first, and goes down with it
+        below-first (when (neg? after)
+                      (filter #(and (not (:above? %)) (= 0 (get-in old [:marks (mark-id (:id %))]))) all))
+        line  (if (neg? after) 0 (inc pos))
+        doc   (-> old (ed/move pos) (ed/insert "\n"))
+        doc   (reduce #(ed/mark %1 (mark-id (:id %2)) 1) doc below-first)
+        doc   (reduce #(ed/mark %1 (mark-id (:id %2)) line) doc moved)]
+    (-> (reduce (fn [l m] (assoc-in l [:insets (:id m) :above?] false)) level moved)
+        (assoc :doc (ed/move doc line) :goal-x nil :upstream? false)
+        (history/record (ed/move old pos) pos pos "\n"))))
+
+(defn line-above
+  "A new, empty line above the inset the caret is in, or over, or before,
+  in the text that holds it, between it and what is above; the caret goes
+  to it. nil if the caret isn't in an inset."
+  [app now]
+  (when-let [p (path app)]
+    (let [holder (pop p)
+          app    (at app holder #(line-above-here % (peek p)))
+          level  (if (seq holder) (inset-at app holder) app)]
+      (touched (caret-to app holder (get-in level [:doc :caret])) now))))
 
 ;; ---------------------------------------------------------------- the pointer
 
@@ -1068,8 +1248,15 @@
   back. nil if the click is on none."
   [level now x y on-click]
   (when-let [{:keys [id part]} (hit level x y)]
-    (if (= :header part)
+    (cond
+      ;; a rule has nothing to fold: the caret goes over it
+      (and (= :header part) (rule? (get-in level [:insets id])))
+      (enter level now id)
+
+      (= :header part)
       (toggle level now id)
+
+      :else
       (or (tick-at level now id x y)
           (let [level (if (= id (:inset level)) level (enter level now id))
                 v (view level id)]
@@ -1119,3 +1306,13 @@
           :let [pos (layout/line-start L k)]
           :when (= k (layout/first-line L pos))]
       [k (when (= :checklist (:kind i)) (boolean (get checked (first (text/line-at t pos)))))])))
+
+;; ---------------------------------------------------------------- ends
+
+(defn end-stop
+  "The last stop in the text at `path` (the buffer's, for an empty one),
+  with the insets in it; nil if it is folded."
+  [app path]
+  (let [path (vec path)
+        v    (reduce (fn [l id] (when l (view l id))) app path)]
+    (when v (last-stop v path))))
