@@ -102,17 +102,30 @@
 (defn- leave-line [app now]
   (-> app (enter-mode now :normal) (dissoc :command :goto? :search?)))
 
+(defn- jump
+  "Move the caret to `pos` in the document, leaving a mark where it was
+  to jump back to with `j`."
+  [app now pos]
+  (-> (insets/leave app now)
+      (assoc :doc (-> (:doc app) (ed/move (:caret (:doc app))) ed/set-mark (ed/move pos))
+             :goal-x nil :upstream? false)
+      (dissoc :selecting?)
+      (touched now)))
+
 (defn- goto-line
   "Move the caret to the start of the 1-based line typed, clamped to the
-  text's lines; anything but a number leaves it where it is."
+  text's lines, or to the start (`s`) or end (`e`) of the buffer; anything
+  else leaves it where it is."
   [app now]
-  (if-let [n (parse-long (str/trim (:command app)))]
-    (let [t (text/of (get-in app [:doc :text]))
-          k (-> n dec (max 0) (min (dec (text/line-count t))))]
-      (-> (insets/leave app now)
-          (assoc :doc (ed/move (:doc app) (text/line-start t k)) :goal-x nil :upstream? false)
-          (touched now)))
-    app))
+  (let [typed (str/trim (:command app))]
+    (case typed
+      "s" (jump app now 0)
+      "e" (jump app now (count (:text (:doc app))))
+      (if-let [n (parse-long typed)]
+        (let [t (text/of (get-in app [:doc :text]))
+              k (-> n dec (max 0) (min (dec (text/line-count t))))]
+          (jump app now (text/line-start t k)))
+        app))))
 
 (declare run-command)
 
@@ -180,8 +193,14 @@
   [app now text]
   (if (:search? app)
     (search/on-text app now text)
-    (let [text (if (:goto? app) (apply str (filter #(Character/isDigit ^char %) text)) text)]
-    (-> app (update :command str text) (assoc :dirty? true :blink-from now)))))
+    (if (:goto? app)
+      (let [lower (str/lower-case text)
+            digits (apply str (filter #(Character/isDigit ^char %) text))]
+        (if (and (empty? (:command app)) (#{"s" "e"} lower))
+          ;; `s` and `e` jump at once, when they are all that is typed
+          (leave-line (goto-line (assoc app :command lower) now) now)
+          (-> app (update :command str digits) (assoc :dirty? true :blink-from now))))
+      (-> app (update :command str text) (assoc :dirty? true :blink-from now)))))
 
 (declare on-command-key)
 
