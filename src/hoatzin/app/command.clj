@@ -4,13 +4,18 @@
   the status bar hints at the commands what is typed could still be.
 
   A command runs from any prefix that begins no other, so `:w` is
-  `:write`, and tab completes as far as the commands it could be agree."
+  `:write`, and tab completes as far as the commands it could be agree.
+  What follows the command's name, after a space, is its argument, as in
+  `:mode auk`. The current buffer's mode (see hoatzin.app.modes) may add
+  commands, or replace the editor's own."
   (:require [clojure.string :as str]
             [hoatzin.app.buffers :as buffers]
             [hoatzin.app.buffers-window :as buffers-window]
             [hoatzin.app.face :refer [ui-width]]
             [hoatzin.app.files :as files]
             [hoatzin.app.geometry :refer [status-height]]
+            [hoatzin.app.insets :as insets]
+            [hoatzin.app.modes :as modes]
             [hoatzin.app.settings-window :as settings-window]
             [hoatzin.app.state :refer [px command? enter-mode touched]]
             [hoatzin.lib.editor :as ed]
@@ -37,37 +42,45 @@
                                " (add ! to override)"))
       (assoc app :quit? true))))
 
-;; Each command is (fn [app now force?]), `force?` being a trailing `!`.
-(def ^:private commands
-  {"open"  (fn [app _ _] (files/open app))
-   "write" (fn [app _ _] (if-let [path (:path app)] (files/write-file app path) (files/save-as app)))
-   "save"  (fn [app _ _] (files/save-as app))
-   "quit"  quit
-   "buffers" (fn [app _ _] (buffers-window/open app))
-   "new"   (fn [app now _] (buffers/new-buffer app now))
-   "close" buffers/close
-   "revert" (fn [app now _] (buffers/revert app now))
-   "cd"    (fn [app _ _] (buffers/cd app))
-   "settings" (fn [app _ _] (settings-window/open app))})
+;; Each command is (fn [app now force? arg]), `force?` being a trailing `!`
+;; and `arg` what follows the name, or "".
+(def ^:private builtin-commands
+  {"open"  (fn [app _ _ _] (files/open app))
+   "write" (fn [app _ _ _] (if-let [path (:path app)] (files/write-file app path) (files/save-as app)))
+   "save"  (fn [app _ _ _] (files/save-as app))
+   "quit"  (fn [app now force? _] (quit app now force?))
+   "buffers" (fn [app _ _ _] (buffers-window/open app))
+   "new"   (fn [app now _ _] (buffers/new-buffer app now))
+   "close" (fn [app now force? _] (buffers/close app now force?))
+   "revert" (fn [app now _ _] (buffers/revert app now))
+   "cd"    (fn [app _ _ _] (buffers/cd app))
+   "mode"  (fn [app _ _ arg] (modes/switch app arg))
+   "settings" (fn [app _ _ _] (settings-window/open app))})
+
+(defn- commands
+  "The commands, by name: the editor's, and its mode's over them."
+  [app]
+  (merge builtin-commands (modes/commands app)))
 
 (defn- names-beginning
   "The commands' names that begin with `typed`, alphabetically."
-  [typed]
-  (filterv #(str/starts-with? % typed) (sort (keys commands))))
+  [app typed]
+  (filterv #(str/starts-with? % typed) (sort (keys (commands app)))))
 
 (defn- command-names
   "The commands `typed` could mean: the one it names, else those it begins."
-  [typed]
-  (if (contains? commands typed)
+  [app typed]
+  (if (contains? (commands app) typed)
     [typed]
-    (names-beginning typed)))
+    (names-beginning app typed)))
 
 (defn- parse-command
-  "The command line as [command force?], `force?` being a trailing `!`."
+  "The command line as [command force? arg]: the name, `force?` being a
+  `!` after it, and what follows it after a space."
   [line]
-  (let [typed  (str/trim line)
+  (let [[typed arg] (str/split (str/trim line) #"\s+" 2)
         force? (str/ends-with? typed "!")]
-    [(str/trim (cond-> typed force? (subs 0 (dec (count typed))))) force?]))
+    [(cond-> typed force? (subs 0 (dec (count typed)))) force? (or arg "")]))
 
 ;; ---------------------------------------------------------------- editing it
 
@@ -91,7 +104,7 @@
   (if-let [n (parse-long (str/trim (:command app)))]
     (let [t (text/of (get-in app [:doc :text]))
           k (-> n dec (max 0) (min (dec (text/line-count t))))]
-      (-> app
+      (-> (insets/leave app now)
           (assoc :doc (ed/move (:doc app) (text/line-start t k)) :goal-x nil :upstream? false)
           (touched now)))
     app))
@@ -106,12 +119,12 @@
     (run-command app now)))
 
 (defn- run-command [app now]
-  (let [[command force?] (parse-command (:command app))
+  (let [[command force? arg] (parse-command (:command app))
         app     (leave-line app now)
-        names   (command-names command)]
+        names   (command-names app command)]
     (cond
       (= "" command)     app
-      (= 1 (count names)) ((commands (first names)) app now force?)
+      (= 1 (count names)) (((commands app) (first names)) app now force? arg)
       (seq names)        (assoc app :message (str "Ambiguous command: " command
                                                   " (" (str/join ", " names) ")"))
       :else              (assoc app :message (str "Not an editor command: " command)))))
@@ -120,9 +133,10 @@
   (subs a 0 (count (take-while true? (map = a b)))))
 
 (defn- complete
-  "The command line completed as far as the commands it could mean agree."
-  [command]
-  (let [names (command-names (str/triml command))]
+  "The command line completed as far as the commands it could mean agree;
+  once it has an argument, as it is."
+  [app command]
+  (let [names (when-not (re-find #"\S\s" command) (command-names app (str/triml command)))]
     (if (seq names) (reduce shared-start names) command)))
 
 (defn on-text
@@ -139,7 +153,7 @@
       sdl/K-ESCAPE    (leave-line app now)
       sdl/K-RETURN    (run-line app now)
       sdl/K-KP-ENTER  (run-line app now)
-      sdl/K-TAB       (assoc app :command (complete command) :dirty? true :blink-from now)
+      sdl/K-TAB       (assoc app :command (complete app command) :dirty? true :blink-from now)
       ;; Backspacing past the `:` leaves the command line.
       sdl/K-BACKSPACE (if (empty? command)
                         (leave-line app now)
@@ -172,7 +186,8 @@
   [app]
   (when (and (command? app) (not (:goto? app)))
     (let [[typed] (parse-command (:command app))
-          names (names-beginning typed)]
+          ;; once there is an argument, the command is chosen
+          names (when-not (re-find #"\S\s" (:command app)) (names-beginning app typed))]
       (when (seq names)
         (let [d       (:density app)
               [w]     (:size app)

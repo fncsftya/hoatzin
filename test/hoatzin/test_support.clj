@@ -167,9 +167,10 @@
   :dir-dialogs, reads from :files, a map of path to text, and writes into
   it, unless there is a :write-error to fail with. It saves its settings
   into :saved-settings, unless there is a :settings-error to fail with.
-  `dir` is its working directory, nil unless given.
+  `dir` is its working directory, nil unless given, and `mode-sources`
+  modes besides the editor's own (see hoatzin.app/create).
   Close with `close!`."
-  [& {:keys [width height density clipboard mode dir]
+  [& {:keys [width height density clipboard mode dir mode-sources]
       :or   {width 400 height 300 density 2.0 clipboard "" mode :insert}}]
   (let [c (canvas (long (* width density)) (long (* height density)))
         s (atom {:canvas c :now 0 :clipboard clipboard :density density :dialogs 0
@@ -196,7 +197,8 @@
                                                    (do (swap! s assoc :saved-settings settings) nil)))
                                              :font-families-fn (constantly font-families)
                                              :now          0}
-                                      mode (assoc :mode mode))))
+                                      mode (assoc :mode mode)
+                                      mode-sources (assoc :mode-sources mode-sources))))
     s))
 
 (defn close! [s]

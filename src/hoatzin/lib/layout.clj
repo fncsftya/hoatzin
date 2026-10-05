@@ -265,6 +265,11 @@
          j (if (and upstream? (pos? j) (= u (:start (nth (:lines p) j)))) (dec j) j)]
      [(ct/offset-for-index (set-line L p j) u) (+ first-line j)])))
 
+(defn first-line
+  "The first visual line of the paragraph holding `pos`."
+  [L pos]
+  (:first-line (para-at L pos)))
+
 (defn last-line
   "The last visual line of the paragraph holding `pos`."
   [L pos]

@@ -6,6 +6,7 @@
             [hoatzin.app.display :as display]
             [hoatzin.app.face :as face]
             [hoatzin.app.files :as files]
+            [hoatzin.app.insets :as insets]
             [hoatzin.app.scroll :as scroll]
             [hoatzin.app.state :refer [px]]
             [hoatzin.app.theme :as theme]
@@ -14,8 +15,9 @@
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.lib.textures :as textures]))
 
-(defn- release-editor-view! [{:keys [ctx textures font]}]
+(defn- release-editor-view! [{:keys [ctx inset-ctx textures font]}]
   (some-> ctx layout/release-context)
+  (some-> inset-ctx layout/release-context)
   (some-> textures textures/clear!)
   (some-> font ct/release-font))
 
@@ -45,7 +47,7 @@
               (do (release-editor-view! app)
                   (-> app
                       (assoc :font (ct/font (:family editor-font) (* (:size editor-font) density))
-                             :ctx nil :dirty? true)
+                             :ctx nil :inset-ctx nil :dirty? true)
                       (assoc-in [:fonts :editor-font] editor-font))))]
     (if (and (not new-density?) (= ui-font (get-in app [:fonts :ui-font])))
       app
@@ -67,15 +69,18 @@
               (assoc :applied-theme name :dirty? true))))))
 
 (defn- sync-size
-  "Take the renderer's output size, and wrap the text to fit it."
+  "Take the renderer's output size, and wrap the text, and the insets'
+  text, to fit it."
   [app]
   (let [[w _ :as size] (sdl/render-output-size (:renderer app))
         wrap (max 1 (- w (* 2 (px app (:margin app)))))
         app (if (= wrap (get-in app [:ctx :width]))
               app
               (do (some-> (:ctx app) layout/release-context)
+                  (some-> (:inset-ctx app) layout/release-context)
                   ;; Re-wrapping moves every line; keep the caret's in view.
-                  (assoc app :ctx (layout/context (:font app) wrap) :layout nil :follow? true)))]
+                  (assoc app :ctx (layout/context (:font app) wrap) :layout nil :follow? true
+                         :inset-ctx (layout/context (:font app) (insets/wrap-width app wrap)))))]
     (if (= size (:size app)) app (assoc app :size size :dirty? true))))
 
 (defn- sync-layout
@@ -95,7 +100,7 @@
   [app]
   (let [app (-> app sync-fonts sync-theme sync-size files/sync-modified)]
     (layout/trim! (:ctx app))
-    (let [app (sync-layout app)]
+    (let [app (-> app sync-layout insets/sync-layouts)]
       (assoc app :block-places (boxes/place-blocks app) :float-places (boxes/place-floats app)))))
 
 (defn settle

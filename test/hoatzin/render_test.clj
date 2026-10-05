@@ -274,3 +274,59 @@
     (t/advance! s 150)                  ; the editor font's wait
     (t/send! s {:type :tick})
     (t/matches-golden? "settings-applied" (t/render! s))))
+
+;; ---------------------------------------------------------------- auk mode
+
+(def ^:private section-text
+  (str "Hoatzin chicks have claws on two of their wing digits, which they use "
+       "to climb back up to the nest after dropping into the water."))
+
+(deftest ^:integration auk-section
+  ;; a section added below the first line, typed into until it wraps: the
+  ;; caret, a block in normal mode, in it, and the line below pushed down
+  (with-session [s :mode :normal :height 360]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk"
+                :text (pr-str {:content [hoatzin-text "It eats leaves."]})})
+    (t/press! s sdl/K-S cmd)
+    (t/type! s "i")
+    (t/type! s section-text)
+    (t/press! s sdl/K-ESCAPE)
+    (t/matches-golden? "auk-section" (t/render! s))))
+
+(deftest ^:integration auk-sections-folded-and-scrolled
+  ;; a folded section, with its first line and its length in its header,
+  ;; then one of more lines than it shows, scrolled, with its thumb; the
+  ;; caret in the buffer's text
+  (with-session [s :mode :normal :height 420]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk"
+                :text (pr-str {:content [{:type :section :ref 1} "Between them." {:type :section :ref 2}
+                                         "After them."]
+                               :sections [{:id 1 :content "Folded away\nand more"}
+                                          {:id 2 :content (str/join "\n" (map #(str "Line " %) (range 1 16)))}]})})
+    (let [header (fn [id] (:header (some #(when (= id (:inset %)) %) (:block-places (t/app s)))))
+          m 48
+          click-header! (fn [id] (let [[x y _ h] (header id)]
+                                   (t/click! s (double (+ m x 20)) (double (+ m y (quot h 2))))))]
+      (click-header! 0)
+      (let [[x y] (header 1)]
+        (t/send! s {:type :move :x (double (+ m x 100)) :y (double (+ m y 100))}
+                 {:type :wheel :dy -1.0})))
+    (t/matches-golden? "auk-sections-folded-and-scrolled" (t/render! s))))
+
+(deftest ^:integration auk-delete-asks
+  ;; cmd+k in a section asks in the status bar
+  (with-session [s :mode :normal]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk"
+                :text (pr-str {:content [hoatzin-text {:type :section :ref 1}]
+                               :sections [{:id 1 :content "Gone soon."}]})})
+    (t/press! s sdl/K-DOWN cmd)
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-K cmd)
+    (t/matches-golden? "auk-delete-asks" (t/render! s))))
+
+(deftest ^:integration auk-help
+  ;; in auk mode, its keys come first in the help
+  (with-session [s :mode :normal :height 400]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk" :text "{:content []}"})
+    (t/type! s "?")
+    (t/matches-golden? "auk-help" (t/render! s))))

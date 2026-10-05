@@ -4,7 +4,12 @@
 
   Render pixels are the window's, from its top left. Content pixels are
   the text's: from the text column's left and the top of the text, before
-  scrolling. Visual lines are the layout's, counted down the whole text."
+  scrolling. Visual lines are the layout's, counted down the whole text.
+
+  The text an inset holds (see hoatzin.app.insets) is shown through a view
+  of the app: the app with the inset's text in place of its own, its
+  :origin, the render pixel its text starts at (as scrolled), and :view-h,
+  how tall it shows. Everything here answers for either."
   (:require [hoatzin.app.display :as display]
             [hoatzin.app.state :refer [px]]
             [hoatzin.lib.layout :as layout]))
@@ -22,7 +27,12 @@
 (defn view-height
   "The height the text shows in: the text area, less its margins."
   [app]
-  (- (text-height app) (* 2 (px app (:margin app)))))
+  (or (:view-h app) (- (text-height app) (* 2 (px app (:margin app))))))
+
+(defn origin
+  "The render pixel [x y] where the text shows: content pixel (0, :scroll)."
+  [app]
+  (or (:origin app) (let [m (px app (:margin app))] [m m])))
 
 ;; ---------------------------------------------------------------- lines
 
@@ -64,8 +74,8 @@
 (defn point->line
   "The visual line under render pixel (x, y), and x along it: [k x]."
   [app x y]
-  (let [m (px app (:margin app))]
-    [(line-at-y app (+ (- y m) (:scroll app))) (- x m)]))
+  (let [[ox oy] (origin app)]
+    [(line-at-y app (+ (- y oy) (:scroll app))) (- x ox)]))
 
 ;; ---------------------------------------------------------------- positions
 

@@ -8,6 +8,8 @@
             [hoatzin.app.command :as command]
             [hoatzin.app.dropdown :as dropdown]
             [hoatzin.app.geometry :as geo]
+            [hoatzin.app.help-window :as help-window]
+            [hoatzin.app.insets :as insets]
             [hoatzin.app.theme :as theme]
             [hoatzin.lib.layout :as layout]
             [hoatzin.lib.sdl :as sdl]
@@ -1172,6 +1174,363 @@
       (is (= 20 (:buffers-active (t/app s))))
       (is (= 20 (last (rows)))))))
 
+;; ---------------------------------------------------------------- major modes
+
+(deftest an-auk-file-is-read-in-auk-mode
+  (with-session [s :mode :normal]
+    (open! s "/notes/birds.auk" "{:content [\"hoatzin\" \"\" \"kakapo \\\"owl\\\" parrot\"]}")
+    (is (= "hoatzin\n\nkakapo \"owl\" parrot" (t/text s)) "each string of :content a line")
+    (is (= "auk" (:major-mode (t/app s))))
+    (is (not (:modified? (t/app s))))
+    (is (= "\"birds.auk\" 3 lines" (:message (t/app s))))
+    (open! s "/notes/birds.txt" "plain")
+    (is (nil? (:major-mode (t/app s))) "a file of no mode's extension is in none")
+    (open! s "/notes/birds.auk" "")
+    (is (= "auk" (:major-mode (t/app s))) "each buffer keeps its mode")))
+
+(deftest an-auk-file-is-written-as-edn
+  (with-session [s :mode :normal]
+    (open! s "/notes/birds.auk" "{:content [\"hoatzin\"]}")
+    (t/type! s "A")
+    (t/press! s sdl/K-RETURN)
+    (t/type! s "a \"quoted\" kea")
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "w")
+    (is (= "{:content\n [\"hoatzin\"\n  \"a \\\"quoted\\\" kea\"]}\n" (get-in @s [:files "/notes/birds.auk"])))
+    (is (not (:modified? (t/app s))))
+    (testing "and reads back as it was"
+      (open! s "/notes/copy.auk" (get-in @s [:files "/notes/birds.auk"]))
+      (is (= "hoatzin\na \"quoted\" kea" (t/text s))))))
+
+(deftest an-auk-file-that-is-not-one-is-refused
+  (with-session [s :mode :normal]
+    (doseq [[contents why] [["{:content" "EOF while reading"]
+                            ["[\"a\"]" "not an auk file: expected a map"]
+                            ["{:content [:heading]}" ":content must be a vector of strings"]
+                            ["{:content [] :title \"x\"}" "unsupported keys :title"]]]
+      (open! s "/notes/bad.auk" contents)
+      (is (str/starts-with? (:message (t/app s)) (str "Can't open bad.auk: " why)) contents)
+      (is (= ["scratch"] (buffer-names s)) "and opens no buffer"))))
+
+(deftest reverting-an-auk-file-reads-it-in-its-mode
+  (with-session [s :mode :normal]
+    (swap! s assoc-in [:files "/notes/a.auk"] "{:content [\"one\" \"two\"]}")
+    (open! s "/notes/a.auk" "{:content [\"zero\"]}")
+    (t/command! s "revert")
+    (is (= "one\ntwo" (t/text s)))))
+
+(deftest the-mode-command-chooses-the-buffers-mode
+  (with-session [s :mode :normal]
+    (t/command! s "mode")
+    (is (= "Mode text; modes: text, auk" (:message (t/app s))))
+    (t/command! s "mode auk")
+    (is (= "auk" (:major-mode (t/app s))))
+    (is (= "Auk mode" (:message (t/app s))))
+    (t/command! s "mo heron")
+    (is (= "No such mode: heron" (:message (t/app s))))
+    (is (= "auk" (:major-mode (t/app s))) "and stays in the one it was in")
+    (t/command! s "mode text")
+    (is (nil? (:major-mode (t/app s))))
+    (testing "tab leaves the argument alone"
+      (t/type! s ":mode a")
+      (t/press! s sdl/K-TAB)
+      (is (= "mode a" (:command (t/app s))))
+      (t/press! s sdl/K-ESCAPE))))
+
+(deftest a-buffer-saved-as-an-auk-file-is-written-in-auk-mode
+  (testing "taking the mode from where it is saved"
+    (with-session [s]
+      (t/type! s "one")
+      (t/press! s sdl/K-ESCAPE)
+      (t/command! s "write")
+      (t/send! s {:type :save-chosen :path "/notes/new.auk"})
+      (is (= "{:content\n [\"one\"]}\n" (get-in @s [:files "/notes/new.auk"])))
+      (is (= "auk" (:major-mode (t/app s))))))
+  (testing "or keeping the one it is in"
+    (with-session [s]
+      (t/type! s "one")
+      (t/press! s sdl/K-ESCAPE)
+      (t/command! s "mode auk")
+      (t/command! s "write")
+      (t/send! s {:type :save-chosen :path "/notes/new.txt"})
+      (is (= "{:content\n [\"one\"]}\n" (get-in @s [:files "/notes/new.txt"]))))))
+
+(def ^:private heron-mode
+  "A mode of the user's: `x` says hello rather than cutting, and :shout
+  shouts its argument."
+  ["heron.clj"
+   "(ns heron (:require [clojure.string :as str] [hoatzin.mode :as mode]))
+    {:name \"heron\"
+     :extensions [\"heron\"]
+     :normal {\"x\" (fn [app _] (mode/message app (str \"hello, \" (mode/text app))))
+              \"!\" (fn [app _] (throw (ex-info \"broken\" {})))}
+     :commands {\"shout\" (fn [app _ force? arg]
+                            (mode/message app (str (str/upper-case arg) (when force? \"!\"))))
+                \"open\" (fn [app _ _ _] (mode/message app \"no opening herons\"))}}"])
+
+(deftest a-mode-binds-keys-and-commands
+  (with-session [s :mode :normal :mode-sources [heron-mode]]
+    (open! s "/birds/grey.heron" "grey")
+    (is (= "heron" (:major-mode (t/app s))))
+    (t/type! s "w")
+    (t/type! s "x")
+    (is (= "hello, grey" (:message (t/app s))) "over the editor's own")
+    (is (= "grey" (t/text s)) "which it replaces")
+    (t/command! s "shout quietly please")
+    (is (= "QUIETLY PLEASE" (:message (t/app s))))
+    (t/command! s "shout! hi")
+    (is (= "HI!" (:message (t/app s))))
+    (t/command! s "open")
+    (is (= "no opening herons" (:message (t/app s))))
+    (is (zero? (:dialogs @s)))
+    (t/type! s "!")
+    (is (= "broken (heron mode)" (:message (t/app s))) "a mode's mistake says so")
+    (t/command! s "mode text")
+    (t/type! s "x")
+    (is (= "" (t/text s)) "out of the mode, the editor's own keys")
+    (t/command! s "shout")
+    (is (= "Not an editor command: shout" (:message (t/app s))))))
+
+(deftest a-mode-that-cannot-be-loaded-says-why
+  (with-session [s :mode-sources [["broken.clj" "(+ 1"] ["nameless.clj" "{}"]]]
+    (is (= (str "Can't load mode broken.clj: EOF while reading, expected ) to match ( at [1,1]; "
+                "Can't load mode nameless.clj: nameless.clj: not a mode, a map with a :name")
+           (:message (t/app s))))
+    (is (= ["auk"] (keys (:modes (t/app s)))) "the others load")))
+
+;; ---------------------------------------------------------------- auk sections
+
+(defn- sections
+  "The insets as a file has them: [[after text] ...]."
+  [s]
+  (insets/snapshot (t/app s)))
+
+(defn- in-section
+  "The text of the section the caret is in, or nil."
+  [s]
+  (some-> (insets/active (t/app s)) :doc :text str))
+
+(defn- section-place [s id] (insets/place-of (t/app s) id))
+
+(defn- auk! [s data] (open! s "/notes/n.auk" (pr-str data)))
+
+(deftest auk-reads-and-writes-sections
+  (with-session [s :mode :normal]
+    (auk! s {:content [{:type :section :ref 7} "one" {:type :section :ref 3} {:type :section :ref 5} "two"]
+             :sections [{:id 3 :content "below one"} {:id 5 :content "and another\nof two lines"}
+                        {:id 7 :content "above"}]})
+    (is (= "one\ntwo" (t/text s)) "the strings are the text")
+    (is (= [[-1 "above"] [0 "below one"] [0 "and another\nof two lines"]] (sections s))
+        "and the sections are where :content has them")
+    (is (not (:modified? (t/app s))))
+    (t/command! s "w")
+    (is (= (str "{:content\n"
+                " [{:type :section :ref 1}\n"
+                "  \"one\"\n"
+                "  {:type :section :ref 2}\n"
+                "  {:type :section :ref 3}\n"
+                "  \"two\"]\n"
+                " :sections\n"
+                " [{:id 1 :content \"above\"}\n"
+                "  {:id 2 :content \"below one\"}\n"
+                "  {:id 3 :content \"and another\\nof two lines\"}]}\n")
+           (get-in @s [:files "/notes/n.auk"]))
+        "written back numbered down the text")
+    (testing "a note of nothing but sections"
+      (open! s "/notes/alone.auk" (pr-str {:content [{:type :section :ref 1}]
+                                           :sections [{:id 1 :content "alone"}]}))
+      (t/command! s "w")
+      (is (= "{:content\n [{:type :section :ref 1}]\n :sections\n [{:id 1 :content \"alone\"}]}\n"
+             (get-in @s [:files "/notes/alone.auk"]))))))
+
+(deftest auk-refuses-sections-it-cannot-place
+  (with-session [s :mode :normal]
+    (doseq [[data why] [[{:content [{:type :section :ref 1}]} "no section 1"]
+                        [{:content [] :sections [{:id 1 :content "x"}]} "section 1 is not in :content"]
+                        [{:content [{:type :section :ref 1} {:type :section :ref 1}]
+                          :sections [{:id 1 :content "x"}]} "section 1 is in :content twice"]
+                        [{:content [] :sections [{:id 1 :content 2}]} "section 1's :content must be a string"]
+                        [{:content [{:type :section :ref 1 :open? true}] :sections [{:id 1 :content "x"}]}
+                         ":content must be a vector of strings and {:type :section :ref id}"]]]
+      (auk! s data)
+      (is (str/starts-with? (:message (t/app s)) (str "Can't open n.auk: " why)) (pr-str data)))
+    (is (= ["scratch"] (buffer-names s)))))
+
+(deftest cmd-s-adds-a-section-below-the-line
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" "two"]})
+    (t/press! s sdl/K-S cmd)
+    (is (= [[0 ""]] (sections s)) "below the line the caret is in")
+    (is (= "" (in-section s)) "with the caret in it")
+    (is (= :normal (:mode (t/app s))) "still in normal mode")
+    (is (:modified? (t/app s)))
+    (t/type! s "i")
+    (t/type! s "a note")
+    (is (= "a note" (in-section s)) "typing goes into the section")
+    (is (= "one\ntwo" (t/text s)) "and leaves the text alone")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-S cmd)
+    (is (= [[0 "a note"] [0 ""]] (sections s)) "in a section, a new one goes below it")
+    (t/command! s "w")
+    (is (= (str "{:content\n [\"one\"\n  {:type :section :ref 1}\n  {:type :section :ref 2}\n  \"two\"]\n"
+                " :sections\n [{:id 1 :content \"a note\"}\n  {:id 2 :content \"\"}]}\n")
+           (get-in @s [:files "/notes/n.auk"])))
+    (is (not (:modified? (t/app s))))
+    (testing "only in auk mode"
+      (t/command! s "mode text")
+      (t/press! s sdl/K-S cmd)
+      (is (= 2 (count (sections s)))))))
+
+(deftest a-section-grows-to-ten-lines-then-scrolls
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one"]})
+    (t/press! s sdl/K-S cmd)
+    (t/type! s "i")
+    (let [lh (layout/line-height (:layout (t/app s)))
+          id (:inset (t/app s))
+          body-h #(let [[_ _ _ h] (:text (section-place s id))] h)]
+      (is (= lh (body-h)) "one line to begin with")
+      (t/type! s "1\n2\n3")
+      (is (= (* 3 lh) (body-h)) "a line more for each")
+      (t/type! s (apply str (map #(str "\n" %) (range 4 16))))
+      (is (= (* insets/max-rows lh) (body-h)) "no more than ten")
+      (is (= (* 5 lh) (get-in (t/app s) [:insets id :scroll])) "scrolled to show the caret's line")
+      (t/press! s sdl/K-UP cmd)
+      (is (zero? (get-in (t/app s) [:insets id :scroll])) "and back up with it"))))
+
+(deftest up-and-down-cross-into-and-out-of-sections
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :section :ref 1} "two"] :sections [{:id 1 :content "a\nb"}]})
+    (t/press! s sdl/K-DOWN)
+    (is (= "a\nb" (in-section s)) "down from the line above goes in")
+    (is (zero? (:caret (:doc (insets/active (t/app s))))) "at its first line")
+    (t/press! s sdl/K-DOWN)
+    (is (= 2 (:caret (:doc (insets/active (t/app s))))) "down within it")
+    (t/press! s sdl/K-DOWN)
+    (is (nil? (in-section s)) "down from its last line comes out")
+    (is (= 4 (t/caret s)) "on the line below")
+    (t/press! s sdl/K-UP)
+    (is (= 2 (:caret (:doc (insets/active (t/app s))))) "up from the line below goes in at its last line")
+    (t/press! s sdl/K-UP)
+    (t/press! s sdl/K-UP)
+    (is (nil? (in-section s)) "and up from its first comes out")
+    (is (= 0 (t/caret s)))
+    (testing "a folded section is passed over"
+      (let [[x y _ h] (:header (section-place s 0))]
+        (t/click! s (+ 48.0 x 10) (+ 48.0 y (quot h 2))))
+      (is (get-in (t/app s) [:insets 0 :collapsed?]))
+      (t/press! s sdl/K-DOWN)
+      (is (nil? (in-section s)))
+      (is (= 4 (t/caret s))))))
+
+(deftest clicks-on-sections
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :section :ref 1} "two"] :sections [{:id 1 :content "inside"}]})
+    (let [m 48.0
+          [tx ty _ th] (:text (section-place s 0))]
+      (t/click! s (+ m tx 2) (+ m ty (quot th 2)))
+      (is (= "inside" (in-section s)) "a click in a section puts the caret there")
+      (is (zero? (:caret (:doc (insets/active (t/app s))))))
+      (t/click! s (+ m 200) (+ m ty (quot th 2)))
+      (is (= 6 (:caret (:doc (insets/active (t/app s))))) "where it is")
+      (t/click! s (+ m 2) (+ m 2))
+      (is (nil? (in-section s)) "and one in the text takes it out")
+      (is (zero? (t/caret s))))
+    (testing "folding the section the caret is in takes it out"
+      (t/press! s sdl/K-DOWN)
+      (let [[x y _ h] (:header (section-place s 0))]
+        (t/click! s (+ 48.0 x 10) (+ 48.0 y (quot h 2))))
+      (is (nil? (in-section s)))
+      (is (not (:modified? (t/app s))) "folding changes nothing in the file"))))
+
+(deftest cmd-k-deletes-the-section-once-asked
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :section :ref 1}] :sections [{:id 1 :content "doomed"}]})
+    (t/press! s sdl/K-K cmd)
+    (is (= "The caret is not in a section" (:message (t/app s))))
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-K cmd)
+    (is (= "Delete this section? (y/n)" (get-in (t/app s) [:confirm :prompt])))
+    (t/press! s sdl/K-N)
+    (is (:confirm (t/app s)) "a key waits for the answer")
+    (t/type! s "n")
+    (is (= "Cancelled" (:message (t/app s))))
+    (is (= 1 (count (sections s))))
+    (t/press! s sdl/K-K cmd)
+    (t/press! s sdl/K-ESCAPE)
+    (is (= "Cancelled" (:message (t/app s))) "escape answers no")
+    (t/press! s sdl/K-K cmd)
+    (t/type! s "y")
+    (is (empty? (sections s)))
+    (is (nil? (in-section s)) "the caret is back in the text")
+    (is (= "Deleted the section" (:message (t/app s))))
+    (is (:modified? (t/app s)))))
+
+(deftest a-section-has-its-own-undo
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one"]})
+    (t/type! s "A")
+    (t/type! s " more")
+    (t/press! s sdl/K-ESCAPE)
+    (t/press! s sdl/K-S cmd)
+    (t/type! s "i")
+    (t/type! s "noted")
+    (t/press! s sdl/K-ESCAPE)
+    (t/type! s "u")
+    (is (= "" (in-section s)) "undo in a section undoes its typing")
+    (is (= "one more" (t/text s)) "and not the text's")))
+
+(deftest auk-help-comes-first-in-auk-mode
+  (with-session [s :mode :normal]
+    (let [titles #(keep (fn [[kind title]] (when (= kind :title) title)) (#'help-window/items (t/app s)))]
+      (is (= "Normal mode" (first (titles))))
+      (auk! s {:content []})
+      (is (= ["Auk mode" "Normal mode"] (take 2 (titles)))))))
+
+(deftest insets-need-a-mode-to-write-them
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :section :ref 1}] :sections [{:id 1 :content "x"}]})
+    (t/command! s "mode text")
+    (t/command! s "save")
+    (t/send! s {:type :save-chosen :path "/notes/n.txt"})
+    (is (= "Can't write n.txt: only a mode can write its insets, and text mode can't"
+           (:message (t/app s))))
+    (is (nil? (get-in @s [:files "/notes/n.txt"])))))
+
+(deftest reverting-reads-the-sections-again
+  (with-session [s :mode :normal]
+    (swap! s assoc-in [:files "/notes/n.auk"]
+           (pr-str {:content ["one" {:type :section :ref 1}] :sections [{:id 1 :content "kept"}]}))
+    (auk! s {:content ["one"]})
+    (t/press! s sdl/K-S cmd)
+    (t/command! s "revert")
+    (is (= [[0 "kept"]] (sections s)))
+    (is (nil? (in-section s)))
+    (is (not (:modified? (t/app s))))))
+
+(deftest each-buffer-keeps-its-sections
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :section :ref 1}] :sections [{:id 1 :content "mine"}]})
+    (t/press! s sdl/K-DOWN)
+    (open! s "/notes/other.txt" "plain")
+    (is (empty? (sections s)))
+    (is (nil? (in-section s)))
+    (auk! s {:content []})
+    (is (= "mine" (in-section s)) "the caret still in its section")))
+
+(deftest a-mode-binds-key-chords
+  (with-session [s :mode :normal
+                 :mode-sources [["chord.clj"
+                                 "(ns chord (:require [hoatzin.mode :as mode]))
+                                  {:name \"chord\" :extensions [\"chord\"]
+                                   :normal {\"shift+cmd+j\" (fn [app _] (mode/message app \"chord\"))}}"]]]
+    (open! s "/x.chord" "")
+    (t/press! s (int \j) (bit-or cmd sdl/KMOD-SHIFT))
+    (is (= "chord" (:message (t/app s))) "its modifiers in any order")
+    (t/press! s sdl/K-LEFT)
+    (t/press! s (int \j) cmd)
+    (is (nil? (:message (t/app s))) "and only with them all")))
+
 ;; ---------------------------------------------------------------- boxes
 
 (defn- with-app! [s f & args]
@@ -1243,8 +1602,8 @@
   (with-session [s :mode nil :width 1000]
     (is (nil? (hints s)) "none outside the command line")
     (t/type! s ":")
-    (is (= [["buffers"] ["cd"] ["close"] ["new"] ["open"] ["quit"] ["revert"] ["save"]
-            ["settings"] ["write"]]
+    (is (= [["buffers"] ["cd"] ["close"] ["mode"] ["new"] ["open"] ["quit"] ["revert"]
+            ["save"] ["settings"] ["write"]]
            (hints s))
         "every command, alphabetically, on one row while they fit")
     (t/type! s "sa")
@@ -1256,11 +1615,14 @@
     (t/type! s "x")
     (is (nil? (hints s)) "none when the text begins no command")
     (t/press! s sdl/K-ESCAPE)
-    (is (nil? (hints s)) "gone with the command line"))
+    (is (nil? (hints s)) "gone with the command line")
+    (t/type! s ":mode a")
+    (is (nil? (hints s)) "none once the command has an argument")
+    (t/press! s sdl/K-ESCAPE))
   (testing "in two rows, down then across, when they don't fit on one"
     (with-session [s :mode nil :width 220]
       (t/type! s ":")
-      (is (= [["buffers" "cd"] ["close" "new"]] (hints s)))))
+      (is (= [["buffers" "cd"] ["close" "mode"]] (hints s)))))
   (testing "no more than two rows: the columns that don't fit are left out"
     (is (= [["a" "b"] ["c" "d"]] (#'command/hint-columns ["a" "b" "c" "d" "e" "f"] 10 5 25)))
     (is (= [["a"] ["b"] ["c"]] (#'command/hint-columns ["a" "b" "c"] 10 5 40)))

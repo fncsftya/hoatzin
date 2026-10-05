@@ -1,6 +1,8 @@
 (ns hoatzin.core
   "The desktop host: an SDL window whose events drive hoatzin.app."
-  (:require [jolt.ffi :as ffi]
+  (:require [babashka.fs :as fs]
+            [clojure.string :as str]
+            [jolt.ffi :as ffi]
             [hoatzin.app :as app]
             [hoatzin.lib.coretext :as ct]
             [hoatzin.lib.sdl :as sdl]
@@ -64,6 +66,17 @@
     (= dialog :dir)  (if error {:type :dir-chosen :error error} {:type :dir-chosen :path path})
     error            {:type :opened :error error}
     :else            (merge {:type :opened :path path} (read-file path))))
+
+(defn- user-modes
+  "The user's own modes, from `dir`, as [origin source] pairs, and why
+  any could not be read: {:sources [[origin source]] :errors [s]}."
+  [dir]
+  (reduce (fn [acc f]
+            (try (update acc :sources conj [(str (fs/file-name f)) (slurp (str f))])
+                 (catch Exception e
+                   (update acc :errors conj (str "Can't read mode " f ": " (ex-message e))))))
+          {:sources [] :errors []}
+          (when (fs/directory? dir) (sort (fs/glob dir "*.clj")))))
 
 (defn- write-file
   "Write string `s` to `path`: nil, or why it could not."
@@ -175,7 +188,8 @@
           latest (atom nil)
           dialogs (file-dialogs window)
           settings-file (settings/file)
-          {:keys [error] :as loaded} (settings/read-file settings-file)]
+          {:keys [error] :as loaded} (settings/read-file settings-file)
+          modes (user-modes (settings/modes-dir))]
       (sdl/check! (sdl/start-text-input window) "SDL_StartTextInput")
       (try
         (reset! latest (app/create {:renderer     renderer
@@ -191,7 +205,11 @@
                                     :settings     (:settings loaded)
                                     :save-settings-fn #(settings/write-file! settings-file %)
                                     :font-families-fn ct/font-families
-                                    :message      (when error (str "Can't read settings: " error))
+                                    :mode-sources (:sources modes)
+                                    :message      (some->> (cond->> (:errors modes)
+                                                             error (cons (str "Can't read settings: " error)))
+                                                           seq
+                                                           (str/join "; "))
                                     :now          (sdl/get-ticks)}))
         (with-open [a (ffi/confined-arena)]
           (run-loop window latest dialogs (ffi/alloc a sdl/EVENT-SIZE) (ffi/alloc a sdl/rect) cursors))

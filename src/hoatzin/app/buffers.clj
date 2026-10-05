@@ -16,9 +16,15 @@
   where `:cd` chose. The current buffer's is the working directory. The
   file dialogs start where the last one chose, whichever buffer it was
   for (see hoatzin.app.files/dialog-dir), and in the working directory
-  until one has."
+  until one has.
+
+  Each buffer may be in a mode, its :major-mode (see hoatzin.app.modes):
+  a file opened is in the mode for its extension, if there is one, which
+  reads the file into the text and its insets (see hoatzin.app.insets)."
   (:require [hoatzin.app.files :as files]
             [hoatzin.app.history :as history]
+            [hoatzin.app.insets :as insets]
+            [hoatzin.app.modes :as modes]
             [hoatzin.app.state :refer [touched]]
             [hoatzin.lib.editor :as ed]
             [hoatzin.lib.text :as text]))
@@ -26,7 +32,8 @@
 (def buffer-keys
   "What the app holds of the current buffer, at its top level."
   [:buffer-id :buffer-name :scratch? :path :dir :doc :saved :modified? :compared
-   :undo :undo-tail :undo-chain :scroll :goal-x :upstream? :blocks])
+   :undo :undo-tail :undo-chain :scroll :goal-x :upstream? :blocks :major-mode
+   :insets :inset :next-inset-id :saved-insets])
 
 (def ^:private passing-keys
   "What belongs to the moment rather than to a buffer, left behind as the
@@ -41,7 +48,8 @@
   "A new, empty buffer, numbered `id`, with `kvs` (see `buffer-keys`)."
   [id kvs]
   (merge {:buffer-id id :doc ed/empty-doc :saved (:text ed/empty-doc) :modified? false
-          :scroll 0 :blocks {} :goal-x nil :upstream? false}
+          :scroll 0 :blocks {} :goal-x nil :upstream? false
+          :insets {} :next-inset-id 0 :saved-insets []}
          kvs))
 
 (defn init
@@ -131,23 +139,31 @@
 (defn open-file
   "The file chosen to open, as an :opened event has it: switched to, in
   the buffer visiting it already, else visited in a new one with the
-  caret at its start; or why it could not be. Either way, the next file
-  dialog starts in the directory it was chosen in."
+  caret at its start, in the mode for its extension, if any; or why it
+  could not be. Either way, the next file dialog starts in the directory
+  it was chosen in."
   [app now {:keys [path text error]}]
   (let [file (files/file-name path)
-        app  (cond-> app path (files/chosen-in (files/parent path)))]
+        app  (cond-> app path (files/chosen-in (files/parent path)))
+        cant #(assoc app :message (str "Can't open " (or file "a file") ": " %) :dirty? true)]
     (cond
       error
-      (assoc app :message (str "Can't open " (or file "a file") ": " error) :dirty? true)
+      (cant error)
 
       (some #(= path (:path %)) (listing app))
       (switch app now (some #(when (= path (:path %)) (:buffer-id %)) (listing app)))
 
       :else
-      (let [t (text/of (text/normalize-newlines text))]
-        (-> (add app now {:path path :dir (files/parent path) :saved t
-                          :doc (assoc ed/empty-doc :text t)})
-            (assoc :message (str "\"" file "\" " (files/file-lines t) " lines")))))))
+      (let [mode (modes/for-path app path)
+            {:keys [text error] :as doc} (modes/read-text app mode (text/normalize-newlines text))]
+        (if error
+          (cant error)
+          (let [t (text/of text)]
+            (-> (add app now {:path path :dir (files/parent path) :saved t :major-mode mode
+                              :doc (assoc ed/empty-doc :text t)})
+                (insets/load-all (:insets doc))
+                files/mark-saved
+                (assoc :message (str "\"" file "\" " (files/file-lines t) " lines")))))))))
 
 (defn close
   "Close the current buffer, unless it has unsaved changes and not
@@ -169,12 +185,16 @@
             (-> app (assoc :buffers [b]) (update :next-buffer-id inc) (show now b))))))))
 
 (defn revert
-  "Read the current buffer's file again, replacing its text; undo
-  restores what it was. A buffer visiting no file has nothing to revert
-  to, and says so."
+  "Read the current buffer's file again, in its mode, replacing its text;
+  undo restores what it was. A buffer visiting no file has nothing to
+  revert to, and says so."
   [app now]
   (if-let [path (:path app)]
-    (let [{:keys [text error]} ((:read-file-fn app) path)
+    (let [{:keys [text error] :as read} (let [r ((:read-file-fn app) path)]
+                                          (if (:error r)
+                                            r
+                                            (modes/read-text app (:major-mode app)
+                                                             (text/normalize-newlines (:text r)))))
           file (files/file-name path)]
       (if error
         (assoc app :message (str "Can't revert " file ": " error) :dirty? true)
@@ -189,6 +209,8 @@
               (assoc :doc doc :saved (:text doc) :goal-x nil :upstream? false
                      :message (str "Reverted \"" file "\" " (files/file-lines t) " lines"))
               (history/record old 0 (count (:text old)) s)
+              (insets/load-all (:insets read))
+              files/mark-saved
               (touched now)))))
     (assoc app :message (str "\"" (buffer-name app) "\" has no file to revert to") :dirty? true)))
 

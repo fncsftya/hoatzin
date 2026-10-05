@@ -3,7 +3,6 @@
   (:require [clojure.string :as str]
             [hoatzin.app.caret :refer [caret-rect]]
             [hoatzin.app.geometry :as geo]
-            [hoatzin.app.state :refer [px]]
             [hoatzin.lib.layout :as layout]
             [hoatzin.lib.sdl :as sdl]
             [hoatzin.lib.textures :as textures]
@@ -18,15 +17,15 @@
   (let [{:keys [renderer textures scratch layout scroll]} app
         {:keys [frect irect]} scratch
         {:keys [baseline]} (:metrics layout)
-        m  (px app (:margin app))
+        [ox oy] (geo/origin app)
         [x y w h] (caret-rect app)
         [fr fg fb] (:foreground app)
         back (:background app)
         [_ k] (geo/caret-place app)
         {:keys [line text]} (layout/visual-line layout k)
         ;; the part of the block in view; the text area's clip hides the rest
-        top (max y m)
-        bottom (min (+ y h) (+ m (geo/view-height app)))]
+        top (max y oy)
+        bottom (min (+ y h) (+ oy (geo/view-height app)))]
     (sdl/set-render-draw-color renderer fr fg fb 255)
     (sdl/render-fill-rect renderer (sdl/set-frect! frect x y w h))
     (when (and (not (str/blank? text)) (< top bottom))
@@ -34,8 +33,8 @@
             (textures/fetch! textures renderer [:caret text] line back)]
         (sdl/set-render-clip-rect renderer (sdl/set-rect! irect x top w (- bottom top)))
         (sdl/render-texture renderer texture ffi/null
-                            (sdl/set-frect! frect (- m pad)
-                                            (+ m (- (geo/line-top app k) scroll) (- baseline base))
+                            (sdl/set-frect! frect (- ox pad)
+                                            (+ oy (- (geo/line-top app k) scroll) (- baseline base))
                                             width height))))))
 
 (defn draw-bar-caret! [{:keys [renderer scratch] :as app}]

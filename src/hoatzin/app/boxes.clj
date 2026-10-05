@@ -8,6 +8,8 @@
             [hoatzin.app.face :refer [ui-context]]
             [hoatzin.app.geometry :refer [view-height]]
             [hoatzin.app.help-window :as help-window]
+            [hoatzin.app.insets :as insets]
+            [hoatzin.app.modes :as modes]
             [hoatzin.app.settings-window :as settings-window]
             [hoatzin.app.state :refer [px]]
             [hoatzin.lib.editor :as ed]
@@ -43,11 +45,14 @@
 ;; ---------------------------------------------------------------- placing
 
 (defn place-blocks
-  "Every block with a mark in the document, in order down the text, as
-  {:id :pos :line :top :height :placed}: below visual line :line, the last
-  of the paragraph holding its mark, as wide as the text. :top and :placed
-  (from hoatzin.lib.ui/place) are in content pixels: from the text column's
-  left and the top of the text as scrolled."
+  "Every block with a mark in the document, and every inset (see
+  hoatzin.app.insets), in order down the text, as {:id :pos :line :top
+  :height :placed}: below visual line :line, the last of the paragraph
+  holding its mark (-1 for an inset above the first), as wide as the
+  text. An inset's has its :inset id and its parts' places too (see
+  hoatzin.app.insets/parts). :top and :placed (from hoatzin.lib.ui/place)
+  are in content pixels: from the text column's left and the top of the
+  text as scrolled."
   [app]
   (let [L      (:layout app)
         lh     (layout/line-height L)
@@ -59,15 +64,18 @@
                             (when-let [pos (get marks id)]
                               (let [pos (shown-pos app pos)]
                                 {:id id :node node :pos pos :line (layout/last-line L pos)}))))
-                    (sort-by (juxt :line :pos)))]
+                    (concat (insets/blocks app (:inset-title (modes/current app) "Inset")))
+                    ;; at the same line, blocks by their marks, then insets in order
+                    (sort-by (fn [b] [(:line b) (if (:inset b) 1 0) (if (:inset b) (:order b) (:pos b))])))]
     (loop [bs blocks, extra 0, out []]
       (if-let [{:keys [node line] :as b} (first bs)]
         (let [h (second (ui/measure ctx node))
-              top (+ (* (inc line) lh) extra)]
+              top (+ (* (inc line) lh) extra)
+              placed (ui/place ctx node [0 top width h])]
           (recur (next bs) (+ extra h)
-                 (conj out (-> (dissoc b :node)
-                               (assoc :top top :height h
-                                      :placed (ui/place ctx node [0 top width h]))))))
+                 (conj out (cond-> (-> (dissoc b :node :order)
+                                       (assoc :top top :height h :placed placed))
+                             (:inset b) (merge (insets/parts placed))))))
         out))))
 
 (defn place-floats

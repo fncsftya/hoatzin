@@ -35,6 +35,9 @@
 (def K-C         0x63)
 (def K-V         0x76)
 (def K-X         0x78)
+(def K-K         0x6b)
+(def K-N         0x6e)
+(def K-S         0x73)
 (def K-HOME      0x4000004a)
 (def K-PAGEUP    0x4000004b)
 (def K-END       0x4000004d)
@@ -46,6 +49,7 @@
 (def K-KP-ENTER  0x40000058)
 (def KMOD-SHIFT  0x0003)
 (def KMOD-CTRL   0x00c0)
+(def KMOD-ALT    0x0300)
 (def KMOD-GUI    0x0c00)
 
 (def BUTTON-LEFT 1)

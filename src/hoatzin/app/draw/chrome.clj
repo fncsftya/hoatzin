@@ -3,6 +3,7 @@
   status bar along the bottom."
   (:require [hoatzin.app.buffers :refer [buffer-name]]
             [hoatzin.app.command :as command]
+            [hoatzin.app.confirm :as confirm]
             [hoatzin.app.face :refer [face-line ui-width]]
             [hoatzin.app.geometry :refer [text-height status-height]]
             [hoatzin.app.scroll :refer [scrollbar]]
@@ -33,18 +34,19 @@
 (def ^:private mode-labels {:normal "NORMAL" :insert "INSERT"})
 
 (defn- status-text
-  "What the status bar says on its left: the command line, a message, or
-  the mode."
+  "What the status bar says on its left: the command line, a question, a
+  message, or the mode."
   [{:keys [mode message] :as app}]
   (cond (= mode :command) (command/line-text app)
+        (:confirm app)    (confirm/prompt app)
         message           message
         :else             (mode-labels mode)))
 
 (defn- status-file
-  "What the status bar says on its right: the buffer's name, and [+] while
-  the text differs from what is in its file."
-  [{:keys [modified?] :as app}]
-  (str (buffer-name app) (when modified? " [+]")))
+  "What the status bar says on its right: the buffer's name, [+] while
+  the text differs from what is in its file, and its mode, if any."
+  [{:keys [modified? major-mode] :as app}]
+  (str (buffer-name app) (when modified? " [+]") (when major-mode (str " (" major-mode ")"))))
 
 (defn- draw-status-text!
   "`text` in the status bar, starting at render pixel `x`."

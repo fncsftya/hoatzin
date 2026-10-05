@@ -1,8 +1,10 @@
 (ns hoatzin.app.help-window
   "The help window: the commands and the keys that run them, over the text,
-  opened by `?` in normal mode and closed by escape."
+  opened by `?` in normal mode and closed by escape. The current buffer's
+  mode's own come first (see hoatzin.app.modes)."
   (:require [hoatzin.app.face :refer [ui-width]]
             [hoatzin.app.geometry :refer [status-height]]
+            [hoatzin.app.modes :as modes]
             [hoatzin.lib.sdl :as sdl]))
 
 (def commands
@@ -48,15 +50,22 @@
      [":close" "close the buffer (:close! to discard changes)"]
      [":revert" "read the buffer's file again"]
      [":cd" "choose the buffer's directory"]
+     [":mode name" "put the buffer in a mode (text for none)"]
      [":quit" "quit (:quit! to discard changes)"]
      [":settings" "show the settings"]]]])
 
 (def ^:private padding "Points inside the help window's border." 16)
 (def ^:private gap "Points between the help window's rows." 4)
 
-(def ^:private items
+(defn- sections
+  "The sections shown: the mode's, then the editor's."
+  [app]
+  (concat (modes/help app) commands))
+
+(defn- items
   "The sections flattened to the rows that scroll: [:title s] or [:row keys description]."
-  (vec (mapcat (fn [[title rows]] (cons [:title title] (map #(into [:row] %) rows))) commands)))
+  [app]
+  (vec (mapcat (fn [[title rows]] (cons [:title title] (map #(into [:row] %) rows))) (sections app))))
 
 (defn- geometry
   "The window's height and its rows' height, in points."
@@ -74,7 +83,7 @@
 (defn max-scroll
   "The most rows the list can be scrolled by."
   [app]
-  (max 0 (- (count items) (visible-rows app))))
+  (max 0 (- (count (items app)) (visible-rows app))))
 
 (defn scroll-by
   "The app with the help scrolled `n` rows, within the list."
@@ -90,8 +99,8 @@
     sdl/K-DOWN     (scroll-by app 1)
     sdl/K-PAGEUP   (scroll-by app (- (visible-rows app)))
     sdl/K-PAGEDOWN (scroll-by app (visible-rows app))
-    sdl/K-HOME     (scroll-by app (- (count items)))
-    sdl/K-END      (scroll-by app (count items))
+    sdl/K-HOME     (scroll-by app (- (count (items app))))
+    sdl/K-END      (scroll-by app (count (items app)))
     app))
 
 (defn on-wheel [app dy]
@@ -105,10 +114,10 @@
   (let [m     (:margin app)
         fg    (:foreground app)
         dim   (mapv #(quot (+ (* 2 %1) %2) 3) fg (:window-background app))
-        key-w (/ (reduce max (map #(ui-width app (first %)) (mapcat second commands)))
+        key-w (/ (reduce max (map #(ui-width app (first %)) (mapcat second (sections app))))
                  (:density app))
         start (min (:help-scroll app 0) (max-scroll app))
-        shown (take (visible-rows app) (drop start items))
+        shown (take (visible-rows app) (drop start (items app)))
         more? (pos? (max-scroll app))]
     {:kind :box
      :style {:position :absolute :left m :top m :right m

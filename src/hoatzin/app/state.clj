@@ -66,6 +66,20 @@
 ;;   :saved                                the text as it is in that file
 ;;   :modified? :compared                  whether the text differs from
 ;;                                         :saved, as of :compared [text saved]
+;;   :modes                                the modes, by name: see
+;;                                         hoatzin.app.modes
+;;   :major-mode                           the name of the current buffer's
+;;                                         mode, or nil
+;;   :insets :inset :next-inset-id         the current buffer's insets, the
+;;   :saved-insets :inset-ctx              one the caret is in, the number
+;;                                         the next is to have, what they
+;;                                         are in its file, and their text's
+;;                                         layout context: see
+;;                                         hoatzin.app.insets
+;;   :confirm                              the question the status bar asks,
+;;                                         or nil: see hoatzin.app.confirm
+;;   :pointer                              where the pointer last moved, in
+;;                                         the window
 ;;   :settings                             what the user can change: see
 ;;                                         hoatzin.app.settings
 ;;   :density :font                        the editor font, at the current

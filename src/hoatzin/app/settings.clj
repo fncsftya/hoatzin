@@ -79,6 +79,11 @@
   []
   (str (fs/path (fs/xdg-config-home "hoatzin") "settings.json")))
 
+(defn modes-dir
+  "Where the user's own modes are, each a .clj file: see hoatzin.app.modes."
+  []
+  (str (fs/path (fs/xdg-config-home "hoatzin") "modes")))
+
 (defn read-file
   "{:settings s} from the file at `path`: defaults if there is none. If it
   can't be read, the defaults and :error, why not."

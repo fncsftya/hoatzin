@@ -9,6 +9,7 @@
             [hoatzin.app.face :refer [face-line ui-width]]
             [hoatzin.app.geometry :as geo]
             [hoatzin.app.boxes :refer [focused-field ui-value]]
+            [hoatzin.app.insets :as insets]
             [hoatzin.app.state :refer [px insert? command?]]
             [hoatzin.lib.coretext :as ct]
             [hoatzin.lib.editor :as ed]
@@ -34,14 +35,14 @@
   [app]
   (let [{:keys [layout scroll]} app
         {:keys [caret-top caret-height]} (:metrics layout)
-        m (px app (:margin app))
+        [ox oy] (geo/origin app)
         [x k] (geo/caret-place app)
-        y (+ m (- (geo/line-top app k) scroll) caret-top)]
+        y (+ oy (- (geo/line-top app k) scroll) caret-top)]
     (if (insert? app)
-      [(+ m (long (Math/floor x))) y (max 1 (px app 1)) caret-height]
+      [(+ ox (long (Math/floor x))) y (max 1 (px app 1)) caret-height]
       (let [[x0 x1] (block-extent app x k)
             x0 (long (Math/floor x0))]
-        [(+ m x0) y (max 1 (- (long (Math/ceil x1)) x0)) caret-height]))))
+        [(+ ox x0) y (max 1 (- (long (Math/ceil x1)) x0)) caret-height]))))
 
 (defn- command-caret-rect
   "A bar at the end of the command line."
@@ -69,19 +70,26 @@
        (max 1 (px app 1))
        caret-height])))
 
+(defn- text-with-caret
+  "The view of the inset the caret is in (see hoatzin.app.insets/view),
+  else the app."
+  [app]
+  (or (some->> (:inset app) (insets/view app)) app))
+
 (defn caret-rect
   "The caret's [x y w h] in render pixels. While a field has the focus, or
-  there is a command line, the caret is there, not in the text."
+  there is a command line, the caret is there, not in the text; in the
+  text, it is in the inset it is in, if any."
   [app]
   (or (when (:focus app) (field-caret-rect app))
-      (if (command? app) (command-caret-rect app) (text-caret-rect app))))
+      (if (command? app) (command-caret-rect app) (text-caret-rect (text-with-caret app)))))
 
 ;; ---------------------------------------------------------------- blinking
 
 (defn- caret-in-view? [app]
   (let [[_ y _ h] (caret-rect app)
-        m (px app (:margin app))]
-    (and (< y (+ m (geo/view-height app))) (> (+ y h) m))))
+        [_ oy] (geo/origin app)]
+    (and (< y (+ oy (geo/view-height app))) (> (+ y h) oy))))
 
 (defn caret-blinking?
   "The caret shows while focused. In the text, it shows while no window
@@ -93,7 +101,8 @@
        (cond (:focus app)   (some? (typing-field app))
              (:window app)  false
              (command? app) true
-             :else (and (nil? (ed/selection (:doc app))) (caret-in-view? app)))))
+             :else (let [t (text-with-caret app)]
+                     (and (nil? (ed/selection (:doc t))) (caret-in-view? t))))))
 
 (defn caret-visible?
   "Whether the caret is shown at time `now` (ms): it is blinking, and in

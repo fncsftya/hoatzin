@@ -52,6 +52,18 @@
   The scratch buffer's changes are its own: they don't stop a quit, or
   its closing, unless it has been saved to a file.
 
+  Each buffer may be in a mode, after Emacs's major modes (see
+  hoatzin.app.modes): Clojure evaluated by SCI, outside the editor, that
+  says how its files are read and written and may add or replace commands
+  and normal mode's keys, add its own to the help, ask yes or no in the
+  status bar (see hoatzin.app.confirm), and add insets: boxes in the text
+  holding text of their own, which the caret moves into and out of (see
+  hoatzin.app.insets). A file opened or saved takes the mode for its
+  extension, if there is one, and
+    :mode name                      puts the buffer in mode `name`
+                                    (\"text\" for none); with no name, says
+                                    which it is in, and which there are
+
   While a window is open, it takes the input: the text is left alone.
 
   Clicking an editable field (see hoatzin.lib.ui) gives it the focus: then
@@ -99,23 +111,28 @@
   This namespace is the app's interface, and routes each event to where
   it is handled. The rest is in hoatzin.app.*; the app map itself is
   described in hoatzin.app.state."
-  (:require [jolt.ffi :as ffi]
+  (:require [clojure.string :as str]
+            [jolt.ffi :as ffi]
             [hoatzin.app.boxes :as boxes]
             [hoatzin.app.buffers :as buffers]
             [hoatzin.app.caret :as caret]
             [hoatzin.app.command :as command]
+            [hoatzin.app.confirm :as confirm]
             [hoatzin.app.draw :as draw]
             [hoatzin.app.dropdown :as dropdown]
             [hoatzin.app.files :as files]
             [hoatzin.app.input.fields :as fields]
             [hoatzin.app.input.keyboard :as keyboard]
             [hoatzin.app.input.mouse :as mouse]
+            [hoatzin.app.insets :as insets]
+            [hoatzin.app.modes :as modes]
             [hoatzin.app.scroll :as scroll]
             [hoatzin.app.settings :as settings]
             [hoatzin.app.state :as state]
             [hoatzin.app.sync :as sync]
             [hoatzin.lib.sdl :as sdl]
-            [hoatzin.lib.textures :as textures]))
+            [hoatzin.lib.textures :as textures]
+            [hoatzin.lib.ui :as ui]))
 
 ;; ---------------------------------------------------------------- lifecycle
 
@@ -125,35 +142,41 @@
   :save-dialog-fn, :dir-dialog-fn, :read-file-fn, :write-file-fn,
   :save-settings-fn, :font-families-fn, :now, :dir (the working
   directory, if any), :settings (the defaults unless given), :mode
-  (:normal unless given), :message, and any key of
-  hoatzin.app.state/defaults. It has one buffer, the scratch buffer.
-  Release it with `destroy!`."
-  [{:keys [now dir] :or {now 0} :as opts}]
-  (sync/settle (buffers/init
-                (merge state/defaults
-                       {:density-fn   (constantly 1.0)
-                        :clipboard-fn (constantly "")
-                        :set-clipboard-fn (fn [_])
-                        :open-dialog-fn (fn [_])
-                        :save-dialog-fn (fn [_])
-                        :dir-dialog-fn (fn [_])
-                        :read-file-fn (fn [_] {:error "no file system"})
-                        :write-file-fn (fn [_ _] "no file system")
-                        :save-settings-fn (fn [_])
-                        :font-families-fn (constantly [])
-                        :option-faces (atom {})
-                        :settings     settings/defaults
-                        :textures     (textures/cache)
-                        :ui-textures  (textures/cache)
-                        :floats       []
-                        :ui-values    {}
-                        :scratch      {:frect (ffi/alloc sdl/frect) :irect (ffi/alloc sdl/rect)}
-                        :mode         :normal
-                        :focused?     true
-                        :blink-from   now
-                        :dirty?       true}
-                       (dissoc opts :now :dir))
-                dir)))
+  (:normal unless given), :mode-sources (modes besides the editor's own,
+  as [origin source] pairs: see hoatzin.app.modes/load-sources), :message,
+  and any key of hoatzin.app.state/defaults. It has one buffer, the
+  scratch buffer. A mode that can't be loaded is left out, and the
+  message says why. Release it with `destroy!`."
+  [{:keys [now dir mode-sources message] :or {now 0} :as opts}]
+  (let [{:keys [modes errors]} (modes/load-sources (concat (modes/builtin-sources) mode-sources))]
+    (sync/settle (buffers/init
+                 (merge state/defaults
+                        {:density-fn   (constantly 1.0)
+                         :clipboard-fn (constantly "")
+                         :set-clipboard-fn (fn [_])
+                         :open-dialog-fn (fn [_])
+                         :save-dialog-fn (fn [_])
+                         :dir-dialog-fn (fn [_])
+                         :read-file-fn (fn [_] {:error "no file system"})
+                         :write-file-fn (fn [_ _] "no file system")
+                         :save-settings-fn (fn [_])
+                         :font-families-fn (constantly [])
+                         :option-faces (atom {})
+                         :settings     settings/defaults
+                         :textures     (textures/cache)
+                         :ui-textures  (textures/cache)
+                         :floats       []
+                         :ui-values    {}
+                         :scratch      {:frect (ffi/alloc sdl/frect) :irect (ffi/alloc sdl/rect)}
+                         :mode         :normal
+                         :focused?     true
+                         :blink-from   now
+                         :dirty?       true}
+                        (dissoc opts :now :dir :mode-sources)
+                        {:modes   modes
+                         :message (some->> (seq (remove nil? (cons message errors)))
+                                           (str/join "; "))})
+                 dir))))
 
 (defn destroy! [app]
   (sync/release-view! app)
@@ -161,43 +184,67 @@
 
 ;; ---------------------------------------------------------------- events
 
+(defn- normal? [app] (= :normal (:mode app)))
+
 (defn- on-text-event
   "An event for the text: no field has the focus, and no window is open
-  or it left the event alone."
+  or it left the event alone. What edits the text edits the inset the
+  caret is in, if it is in one (see hoatzin.app.insets/in-view); the
+  mode's bindings and the command line work on the buffer."
   [app now event]
-  (let [composing? (some? (:composition app))]
+  (let [composing? (insets/composing? app)
+        in-text    (fn [f] (insets/in-view app f))
+        click      #(mouse/on-click % now (:x event) (:y event) (:mod event 0) (:clicks event 1))]
     (case (:type event)
       :quit   (assoc app :quit? true)
-      :text   (keyboard/on-text app now (:text event))
+      :text   (cond (state/command? app) (keyboard/on-text app now (:text event))
+                    (and (normal? app) (modes/normal-command app (:text event)))
+                    ((modes/normal-command app (:text event)) app now)
+                    :else (in-text #(keyboard/on-text % now (:text event))))
       ;; Normal mode has no use for the input method's marked text.
       :composition (if (state/insert? app)
-                     (keyboard/compose app now (:text event) (:cursor event))
+                     (in-text #(keyboard/compose % now (:text event) (:cursor event)))
                      app)
       ;; While composing, keys and clicks belong to the input method, and the
       ;; layout shows the composition, so its positions aren't the document's.
-      :key    (cond composing? app
-                    (state/command? app) (command/on-key app now (:key event))
-                    :else (keyboard/on-key app now (:key event) (:mod event 0)))
+      :key    (let [{:keys [key mod] :or {mod 0}} event]
+                (cond composing? app
+                      (state/command? app) (command/on-key app now key)
+                      (and (normal? app) (modes/normal-key app key mod))
+                      ((modes/normal-key app key mod) app now)
+                      :else (or (insets/cross app now key mod)
+                                (in-text #(keyboard/on-key % now key mod)))))
       ;; The scroll bar leaves the document alone, so it works while composing.
       ;; Boxes take the clicks on them, over the text and the scroll bar;
-      ;; a click anywhere else gives up the focus.
-      :click  (if-let [hit (boxes/ui-hit app (:x event) (:y event))]
-                (fields/on-ui-click app now hit)
-                (let [app (fields/blur app)]
-                  (cond (scroll/on-scrollbar? app (:x event))
-                        (scroll/on-scrollbar-click app (:y event))
-                        composing? app
-                        :else (mouse/on-click app now (:x event) (:y event)
-                                              (:mod event 0) (:clicks event 1)))))
+      ;; a click anywhere else gives up the focus. A click in an inset puts
+      ;; the caret there, and one on its header folds or unfolds it.
+      :click  (let [{:keys [x y]} event
+                    inset (when-not (ui/hit (:float-places app) x y) (insets/hit app x y))
+                    hit   (boxes/ui-hit app x y)]
+                (cond
+                  inset (let [app (fields/blur app)]
+                          (if (and composing? (= :body (:part inset)))
+                            app
+                            (insets/click app now inset click)))
+                  hit   (fields/on-ui-click app now hit)
+                  :else (let [app (fields/blur app)]
+                          (cond (scroll/on-scrollbar? app x) (scroll/on-scrollbar-click app y)
+                                composing? app
+                                :else (click (insets/leave app now))))))
       :drag   (cond (:grab app) (scroll/on-thumb-drag app (:y event))
                     composing? app
-                    :else (mouse/on-drag app now (:x event) (:y event)))
+                    :else (in-text #(mouse/on-drag % now (:x event) (:y event))))
       :release (mouse/on-release app)
       :move   (-> (scroll/hover app (boolean (scroll/on-scrollbar? app (:x event))))
-                  (boxes/hover (:x event) (:y event)))
-      :leave  (-> (scroll/hover app false) (boxes/hover nil nil))
-      :tick   (mouse/autoscroll app now)
-      :wheel  (scroll/on-wheel app now (:dy event))
+                  (boxes/hover (:x event) (:y event))
+                  (assoc :pointer [(:x event) (:y event)]))
+      :leave  (-> (scroll/hover app false) (boxes/hover nil nil) (dissoc :pointer))
+      ;; a drag held outside the window scrolls the buffer's text, not an inset's
+      :tick   (if (:inset app) app (mouse/autoscroll app now))
+      ;; the wheel over an inset that scrolls scrolls it
+      :wheel  (let [[x y] (:pointer app)]
+                (or (insets/on-wheel app x y (:dy event))
+                    (scroll/on-wheel app now (:dy event))))
       :focus  (assoc app :focused? (:focused? event) :blink-from now :dirty? true)
       :opened (buffers/open-file app now event)
       :save-chosen (files/save-chosen app event)
@@ -206,8 +253,9 @@
       app)))
 
 (defn handle
-  "The app after `event` (see the ns doc) at time `now` (ms). An open
-  dropdown list, if any, takes the event first, then the field or
+  "The app after `event` (see the ns doc) at time `now` (ms). A question
+  in the status bar, if any, takes the event first (see
+  hoatzin.app.confirm), then an open dropdown list, then the field or
   dropdown with the focus, then the open window, then the text."
   [app event now]
   (let [;; once the editor font's wait is over, sync-view makes it
@@ -225,6 +273,7 @@
         app (dropdown/glide app now)
         app (scroll/glide app now)]
     (or
+      (when (:confirm app) (confirm/on-event app now event))
       (when (:list app) (dropdown/on-event app now event))
       (when (:focus app) (fields/on-focus-event app now event))
       (when (:window app) (fields/on-window-event app now event))

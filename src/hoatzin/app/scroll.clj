@@ -2,6 +2,7 @@
   "Scrolling the text: :scroll is how far down it is, in pixels. The
   scroll bar shows it, and the wheel or dragging the bar's thumb moves it."
   (:require [hoatzin.app.geometry :as geo]
+            [hoatzin.app.insets :as insets]
             [hoatzin.app.state :refer [px]]
             [hoatzin.lib.layout :as layout]))
 
@@ -15,12 +16,13 @@
       clamp-scroll (assoc :dirty? true)))
 
 (defn follow-caret
-  "Scroll just enough to bring the caret's line into view."
+  "Scroll just enough to bring the caret's line into view: in the inset
+  it is in, if any, and that in the window."
   [app]
-  (let [L  (:layout app)
+  (let [app (insets/follow app)
+        L  (:layout app)
         lh (layout/line-height L)
-        [_ k] (geo/caret-place app)
-        top (geo/line-top app k)
+        top (insets/caret-top app)
         vh (geo/view-height app)
         s  (:scroll app)]
     (assoc app :scroll-target nil

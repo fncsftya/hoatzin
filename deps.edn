@@ -1,8 +1,10 @@
-{:paths ["src"]
+{:paths ["src" "resources"]
 
  ;; data.json needs the time library's java.time.format classes to load.
  :deps {org.clojure/data.json    {:mvn/version "2.5.1"}
-        io.github.jolt-lang/time {:git/tag "v0.0.9" :git/sha "abeee49"}}
+        io.github.jolt-lang/time {:git/tag "v0.0.9" :git/sha "abeee49"}
+        ;; evaluates modes: see hoatzin.app.modes
+        org.babashka/sci         {:mvn/version "0.13.53"}}
 
  ;; macOS only: SDL3 from Homebrew, text via the system CoreText stack.
  :jolt/native [{:name "SDL3"
