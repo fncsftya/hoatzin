@@ -148,7 +148,6 @@
   "A tint behind each match on visual lines [k0, k1)."
   [app k0 k1]
   (let [{:keys [renderer layout scroll scratch]} app
-        lh (layout/line-height layout)
         [ox oy] (geo/origin app)
         [r g b] highlight]
     (sdl/set-render-draw-blend-mode renderer sdl/BLENDMODE-BLEND)
@@ -158,7 +157,8 @@
             :let [x0 (long (Math/floor x0))]]
       (sdl/render-fill-rect renderer
                             (sdl/set-frect! (:frect scratch) (+ ox x0) (+ oy (- (geo/line-top app k) scroll))
-                                            (- (long (Math/ceil x1)) x0) lh)))
+                                            (- (long (Math/ceil x1)) x0)
+                                            (:line-height (layout/line-metrics layout k)))))
     (sdl/set-render-draw-blend-mode renderer sdl/BLENDMODE-NONE)))
 
 (def mode

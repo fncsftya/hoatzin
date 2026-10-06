@@ -3,10 +3,10 @@
   the document's text (items are lines) and its layout (items are typeset
   paragraphs).
 
-  Every node caches three sums over its items: :n, the item count; :len, a
-  length; and :w, a weight. What :len and :w measure is up to the tree's
-  user, given as a `spec` {:len f :w f} of item -> long. Indexing by any of
-  the three, splicing a run of items and folding over a range are all
+  Every node caches four sums over its items: :n, the item count; :len, a
+  length; :w, a weight; and :h, a height. What :len, :w and :h measure is up
+  to the tree's user, given as a `spec` {:len f :w f :h f} of item -> long
+  (:h may be left out: it is then 0). Indexing by any of the four, splicing a run of items and folding over a range are all
   O(log n) plus the items touched, and an edit shares every subtree it
   doesn't touch with the tree it came from.
 
@@ -17,29 +17,32 @@
 (def ^:private max-kids 32)
 (def ^:private min-kids 8)
 
-(deftype Node [^long n ^long len ^long w kids leaf?])
+(deftype Node [^long n ^long len ^long w ^long h kids leaf?])
 
 (defn n ^long [^Node t] (.-n t))
 (defn len ^long [^Node t] (.-len t))
 (defn w ^long [^Node t] (.-w t))
+(defn h ^long [^Node t] (.-h t))
+
+(defn- zero [_] 0)
 
 ;; ---------------------------------------------------------------- building
 
 (defn- leaf [spec items]
-  (let [lf (:len spec), wf (:w spec), c (count items)]
-    (loop [k 0, l 0, ww 0]
+  (let [lf (:len spec), wf (:w spec), hf (:h spec zero), c (count items)]
+    (loop [k 0, l 0, ww 0, hh 0]
       (if (= k c)
-        (Node. c l ww items true)
+        (Node. c l ww hh items true)
         (let [it (nth items k)]
-          (recur (inc k) (+ l (long (lf it))) (+ ww (long (wf it)))))))))
+          (recur (inc k) (+ l (long (lf it))) (+ ww (long (wf it))) (+ hh (long (hf it)))))))))
 
 (defn- branch [kids]
   (let [c (count kids)]
-    (loop [k 0, nn 0, l 0, ww 0]
+    (loop [k 0, nn 0, l 0, ww 0, hh 0]
       (if (= k c)
-        (Node. nn l ww kids false)
+        (Node. nn l ww hh kids false)
         (let [^Node kid (nth kids k)]
-          (recur (inc k) (+ nn (.-n kid)) (+ l (.-len kid)) (+ ww (.-w kid))))))))
+          (recur (inc k) (+ nn (.-n kid)) (+ l (.-len kid)) (+ ww (.-w kid)) (+ hh (.-h kid))))))))
 
 (defn- chunks
   "`v` cut into the fewest runs of at most `max-kids`, as even as possible."
@@ -75,36 +78,37 @@
 ;; ---------------------------------------------------------------- reading
 
 (defn- measure ^long [^Node t dim]
-  (case dim :n (.-n t) :len (.-len t) :w (.-w t)))
+  (case dim :n (.-n t) :len (.-len t) :w (.-w t) :h (.-h t)))
 
 (defn- item-measure ^long [spec dim it]
-  (case dim :n 1 :len (long ((:len spec) it)) :w (long ((:w spec) it))))
+  (case dim :n 1 :len (long ((:len spec) it)) :w (long ((:w spec) it)) :h (long ((:h spec zero) it))))
 
 (defn locate
-  "The item where the running sum of `dim` (:n, :len or :w) passes `x`: the
-  first whose span [before, before + its measure) holds x, or the last item
-  when x is past them all. Returns [item index len-before w-before]."
+  "The item where the running sum of `dim` (:n, :len, :w or :h) passes `x`:
+  the first whose span [before, before + its measure) holds x, or the last
+  item when x is past them all. Returns [item index len-before w-before
+  h-before]."
   [spec ^Node t dim x]
-  (let [x (long x)]
-    (loop [^Node t t, x x, i 0, l 0, ww 0]
+  (let [x (long x), hf (:h spec zero)]
+    (loop [^Node t t, x x, i 0, l 0, ww 0, hh 0]
       (let [kids (.-kids t)
             last-k (dec (count kids))]
         (if (.-leaf? t)
-          (loop [k 0, x x, l l, ww ww]
+          (loop [k 0, x x, l l, ww ww, hh hh]
             (let [it (nth kids k)
                   m (item-measure spec dim it)]
               (if (or (< x m) (= k last-k))
-                [it (+ i k) l ww]
+                [it (+ i k) l ww hh]
                 (recur (inc k) (- x m)
-                       (+ l (long ((:len spec) it))) (+ ww (long ((:w spec) it)))))))
-          (let [[kid x i l ww]
-                (loop [k 0, x x, i i, l l, ww ww]
+                       (+ l (long ((:len spec) it))) (+ ww (long ((:w spec) it))) (+ hh (long (hf it)))))))
+          (let [[kid x i l ww hh]
+                (loop [k 0, x x, i i, l l, ww ww, hh hh]
                   (let [^Node kid (nth kids k)
                         m (measure kid dim)]
                     (if (or (< x m) (= k last-k))
-                      [kid x i l ww]
-                      (recur (inc k) (- x m) (+ i (.-n kid)) (+ l (.-len kid)) (+ ww (.-w kid))))))]
-            (recur kid x i l ww)))))))
+                      [kid x i l ww hh]
+                      (recur (inc k) (- x m) (+ i (.-n kid)) (+ l (.-len kid)) (+ ww (.-w kid)) (+ hh (.-h kid))))))]
+            (recur kid x i l ww hh)))))))
 
 (defn get-item [spec t i] (first (locate spec t :n i)))
 

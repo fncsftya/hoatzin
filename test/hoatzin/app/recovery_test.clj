@@ -115,6 +115,39 @@
         (is (= [{:after 0 :text "a note" :insets []}] (insets/snapshot (t/app s2))))
         (is (= "auk" (:major-mode (t/app s2))))))))
 
+(deftest headings-come-back
+  (with-root [root]
+    (with-session [s :mode :normal]
+      (open! s "/notes/n.auk" (pr-str {:content ["one" "two"]}))
+      (t/press! s sdl/K-DOWN)
+      (t/type! s "2")
+      (t/press! s sdl/K-S cmd)
+      (t/type! s "i")
+      (t/type! s "a note")
+      (t/press! s sdl/K-ESCAPE)
+      (t/type! s "1")
+      (t/advance! s journal/insets-delay-ms)
+      (t/send! s {:type :tick})
+      (is (nil? (journal/due-at (t/app s))))
+      (crash! root s "1-1"))
+    (let [[b] (recovered root)]
+      (is (= [0 2 0] (:levels b)))
+      (is (= [1] (:levels (first (:insets b)))))
+      (with-session [s2 :mode :normal :recovered [b]]
+        (is (= [0 2 0] (insets/levels-of (t/app s2))))
+        (is (= [1] (:levels (first (insets/snapshot (t/app s2))))))
+        (is (:modified? (t/app s2)))))))
+
+(deftest a-heading-alone-is-kept
+  (with-session [s :mode :normal]
+    (open! s "/notes/n.auk" (pr-str {:content ["one" "two"]}))
+    (is (empty? (:journal @s)) "nothing to lose")
+    (t/type! s "1")
+    (t/send! s {:type :quit})
+    (let [base (first (:journal @s))]
+      (is (= :base (:op base)))
+      (is (= [1 0] (:levels base))))))
+
 (deftest quitting-keeps-the-insets-still-waiting
   (with-session [s :mode :normal]
     (open! s "/notes/n.auk" (pr-str {:content ["one"]}))

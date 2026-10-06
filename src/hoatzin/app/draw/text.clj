@@ -13,7 +13,7 @@
 (defn draw-selection! [app first-k last-k]
   (when-let [[lo hi] (ed/selection (:doc app))]
     (let [{:keys [renderer layout scroll scratch]} app
-          {:keys [line-height caret-height]} (:metrics layout)
+          {:keys [caret-height]} (:metrics layout)
           [ox oy] (origin app)
           [r g b] (if (:focused? app) (:selection app) (:selection-unfocused app))
           nl (max 1 (quot caret-height 4))]
@@ -23,18 +23,19 @@
         (sdl/render-fill-rect renderer
                               (sdl/set-frect! (:frect scratch)
                                               (+ ox x0) (+ oy (- (line-top app k) scroll))
-                                              (- (long (Math/ceil x1)) x0) line-height))))))
+                                              (- (long (Math/ceil x1)) x0)
+                                              (:line-height (layout/line-metrics layout k))))))))
 
 (defn draw-lines! [app first-k last-k]
   (let [{:keys [renderer layout scroll textures scratch]} app
-        {:keys [baseline]} (:metrics layout)
         [ox oy] (origin app)]
     (doseq [k (range first-k last-k)
-            :let [{:keys [line text]} (layout/visual-line layout k)]
+            :let [{:keys [line text level metrics]} (layout/visual-line layout k)]
             :when (not (str/blank? text))]
       (let [{:keys [texture width height pad] base :baseline}
-            (textures/fetch! textures renderer text line (:foreground app))
-            y (+ oy (- (line-top app k) scroll) (- baseline base))]
+            ;; a heading's line is of a font of its own: keyed apart
+            (textures/fetch! textures renderer (if (zero? level) text [level text]) line (:foreground app))
+            y (+ oy (- (line-top app k) scroll) (- (:baseline metrics) base))]
         (sdl/render-texture renderer texture ffi/null
                             (sdl/set-frect! (:frect scratch) (- ox pad) y width height))))))
 
@@ -43,7 +44,6 @@
   [app first-k last-k]
   (when-let [{comp :text} (:composition app)]
     (let [{:keys [renderer layout scroll scratch]} app
-          {:keys [baseline]} (:metrics layout)
           [ox oy] (origin app)
           [fr fg fb] (:foreground app)
           a (get-in app [:doc :caret])
@@ -54,6 +54,7 @@
         (sdl/render-fill-rect renderer
                               (sdl/set-frect! (:frect scratch)
                                               (+ ox (long (Math/floor x0)))
-                                              (+ oy (- (line-top app k) scroll) baseline below)
+                                              (+ oy (- (line-top app k) scroll)
+                                                 (:baseline (layout/line-metrics layout k)) below)
                                               (- (long (Math/ceil x1)) (long (Math/floor x0)))
                                               thickness))))))

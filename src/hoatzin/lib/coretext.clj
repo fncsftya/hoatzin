@@ -138,7 +138,7 @@
 (defn font
   "Open a font by PostScript or family name at `size` pixels.
 
-  Returns {:ref :attrs :family :ascent :descent :leading}; release it with
+  Returns {:ref :attrs :family :size :ascent :descent :leading}; release it with
   `release-font`. CoreText substitutes a fallback for unknown names, and
   :family reports the face actually chosen."
   ([size] (font default-family size))
@@ -151,6 +151,7 @@
        {:ref     f
         :attrs   (text-attributes f)
         :family  (try (cf-string->str fam) (finally (cf-release fam)))
+        :size    size
         :ascent  (ct-font-ascent f)
         :descent (ct-font-descent f)
         :leading (ct-font-leading f)}))))

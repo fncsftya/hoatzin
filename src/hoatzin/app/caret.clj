@@ -35,9 +35,9 @@
   the block, if the :caret-shape is :underline."
   [app]
   (let [{:keys [layout scroll]} app
-        {:keys [caret-top caret-height baseline]} (:metrics layout)
         [ox oy] (geo/origin app)
         [x k] (geo/caret-place app)
+        {:keys [caret-top caret-height baseline]} (layout/line-metrics layout k)
         top (+ oy (- (geo/line-top app k) scroll))
         y (+ top caret-top)]
     (cond

@@ -17,7 +17,10 @@
   A text, the buffer's or an inset's, is a level: a map of `text-keys`,
   the buffer's at the top of the app. A level's :insets are the insets in
   its text, by id; :inset the id of the one the caret is in, if any, and
-  :next-inset-id the id the next is to have. Each inset is a level itself,
+  :next-inset-id the id the next is to have. Its :levels, if it has any
+  headings, are the heading level of each paragraph of its text as it was
+  at :levels-text, 0 for text, and follow it as it is edited, as a
+  checklist's ticks do. Each inset is a level itself,
   and also
     {:id :order :above? :kind :title :collapsed? :checked :checked-text
      :renaming :layout :laid-out :layout-ctx :block-places}
@@ -64,7 +67,7 @@
   scrolled, in pixels; a view of an inset takes them from the inset and
   gives them back."
   [:doc :undo :undo-tail :undo-chain :goal-x :upstream? :composition
-   :insets :inset :before? :next-inset-id :scroll])
+   :insets :inset :before? :next-inset-id :scroll :levels :levels-text])
 
 (def ^:private view-keys
   "What a view of an inset has of its own besides `text-keys`, from the
@@ -141,19 +144,26 @@
 
 ;; ---------------------------------------------------------------- checks
 
+(defn- fit-flags
+  "`flags` as one for each paragraph of text `t`, `fill` past its end and
+  where there is none."
+  [t flags fill]
+  (vec (take (text/line-count t) (concat (map #(if (nil? %) fill %) flags) (repeat fill)))))
+
 (defn- fit-checks
   "`checked` as one for each paragraph of text `t`, unticked past its end."
   [t checked]
-  (vec (take (text/line-count t) (concat (map boolean checked) (repeat false)))))
+  (fit-flags t checked false))
 
 (defn- reconcile
-  "The ticks `flags` of text `old`'s paragraphs for those of `new`, an
-  edit of it. Paragraphs the edit left alone keep theirs, as do changed
-  ones that are, word for word, ones that were; of the rest, the first
-  keeps the first's, as when a paragraph is split or joined, or all keep
-  theirs when there are as many as there were."
-  [old new flags]
-  (let [flags (fit-checks old flags)
+  "The ticks (or levels) `flags` of text `old`'s paragraphs for those of
+  `new`, an edit of it. Paragraphs the edit left alone keep theirs, as do
+  changed ones that are, word for word, ones that were; of the rest, the
+  first keeps the first's, as when a paragraph is split or joined, or all
+  keep theirs when there are as many as there were. The others are
+  `fill`."
+  [old new flags fill]
+  (let [flags (fit-flags old flags fill)
         [i ja jb] (text/changed-lines old new)
         olds (text/lines old i ja)
         news (text/lines new i jb)
@@ -167,7 +177,7 @@
                                 (cond (some? f) f
                                       (= (count olds) (count news)) (was k)
                                       (and (zero? k) (seq olds) (not (used 0))) (was 0)
-                                      :else false))
+                                      :else fill))
                               mid))]
     (vec (concat (subvec flags 0 i) mid (subvec flags ja)))))
 
@@ -177,21 +187,36 @@
   (let [t (get-in i [:doc :text])]
     (if (or (not= :checklist (:kind i)) (identical? t (:checked-text i)))
       i
-      (assoc i :checked (reconcile (:checked-text i) t (:checked i)) :checked-text t))))
+      (assoc i :checked (reconcile (:checked-text i) t (:checked i) false) :checked-text t))))
 
-(defn- toggle-check*
-  "Checklist `i` with the paragraph the caret is in ticked, or not."
-  [i]
-  (let [i (sync-checks i)
-        k (first (text/line-at (text/of (get-in i [:doc :text])) (get-in i [:doc :caret])))]
-    (update i :checked update k not)))
+;; ---------------------------------------------------------------- headings
 
-(defn toggle-check
-  "Tick, or untick, the item the caret is in of the checklist at `path`."
-  [app now path]
-  (if (= :checklist (:kind (inset-at app path)))
-    (touched (at app path toggle-check*) now)
-    app))
+(defn- headings
+  "`levels` if any paragraph is a heading, else nil."
+  [levels]
+  (when (some pos? levels) levels))
+
+(defn sync-levels
+  "`level` with its :levels those of its text as it is."
+  [level]
+  (let [t (get-in level [:doc :text])]
+    (if (or (nil? (:levels level)) (identical? t (:levels-text level)))
+      level
+      (assoc level
+             :levels (headings (reconcile (:levels-text level) t (:levels level) 0))
+             :levels-text t))))
+
+(defn levels-of
+  "The heading level of each paragraph of `level`'s text, 0 for text, or
+  nil if there are no headings."
+  [level]
+  (:levels (sync-levels level)))
+
+(defn- with-levels
+  "`level` with paragraphs' heading `levels`, as one for each of its text's, or fewer."
+  [level levels]
+  (let [t (get-in level [:doc :text])]
+    (assoc level :levels (headings (fit-flags t levels 0)) :levels-text t)))
 
 ;; ---------------------------------------------------------------- the document
 
@@ -220,23 +245,24 @@
           (cond-> {:after (:after i) :text (str (get-in i [:doc :text])) :insets (snapshot i)}
             (:kind i)  (assoc :kind (:kind i))
             (:title i) (assoc :title (:title i))
+            (levels-of i) (assoc :levels (levels-of i))
             (= :checklist (:kind i)) (assoc :checked (:checked (sync-checks i)))))
         (ordered level)))
 
 (defn- fresh
-  "A new inset numbered `id`, of `spec`'s :text, :kind, :title and
-  :checked, the caret at its start."
-  [id order above? {:keys [text kind title checked]}]
+  "A new inset numbered `id`, of `spec`'s :text, :kind, :title, :checked and
+  :levels, the caret at its start."
+  [id order above? {:keys [text kind title checked levels]}]
   (let [doc (ed/doc (or text ""))]
-    (cond-> {:id id :order order :above? above? :scroll 0 :doc doc :insets {} :next-inset-id 0}
+    (cond-> (with-levels {:id id :order order :above? above? :scroll 0 :doc doc :insets {} :next-inset-id 0}
+              levels)
       kind  (assoc :kind kind)
       (= :rule kind) (assoc :collapsed? true)
       title (assoc :title title)
       (= :checklist kind) (assoc :checked (fit-checks (:text doc) checked) :checked-text (:text doc)))))
 
-(defn load-all
-  "`level` with insets `specs`, as `snapshot` gives them, in place of any
-  it had: :after past its last paragraph is below that."
+(defn- load-specs
+  "`level` with insets `specs`, as `load-all` has them."
   [level specs]
   (let [doc (reduce #(ed/unmark %1 (mark-id %2)) (:doc level) (keys (:insets level)))
         t   (text/of (:text doc))
@@ -247,13 +273,20 @@
                         above? (neg? k)
                         pos    (if above? 0 (+ (text/line-start t k) (count (text/line t k))))]
                     [(ed/mark doc (mark-id id) pos)
-                     (assoc insets id (load-all (fresh id order above? spec) (:insets spec)))
+                     (assoc insets id (load-specs (fresh id order above? spec) (:insets spec)))
                      (inc id)]))
                 [doc {} (:next-inset-id level 0)]
                 (map-indexed vector specs))]
     (-> level
         (assoc :doc doc :insets insets :next-inset-id next-id)
         (dissoc :inset))))
+
+(defn load-all
+  "`level` with insets `specs`, as `snapshot` gives them, in place of any
+  it had: :after past its last paragraph is below that. Its paragraphs'
+  heading `levels` are those given, if any."
+  ([level specs] (load-all level specs nil))
+  ([level specs levels] (-> (load-specs level specs) (with-levels levels))))
 
 ;; ---------------------------------------------------------------- the caret
 
@@ -354,6 +387,38 @@
       (unview app id (in-view v f))
       (f app))
     (f app)))
+
+(defn set-heading
+  "Make the paragraphs the selection covers, or the one the caret is in,
+  headings of level `n`, 1 to `layout/max-heading`, in the text with the
+  caret; or, if they all are already, text again."
+  [app now n]
+  (in-view app
+           (fn [v]
+             (let [v   (sync-levels v)
+                   doc (:doc v)
+                   t   (text/of (:text doc))
+                   [lo hi] (or (ed/selection doc) [(:caret doc) (:caret doc)])
+                   ks  (range (first (text/line-at t lo))
+                              (inc (first (text/line-at t (if (> hi lo) (dec hi) lo)))))
+                   cur (fit-flags t (:levels v) 0)
+                   to  (if (every? #(= n (cur %)) ks) 0 n)]
+               (-> (with-levels v (reduce #(assoc %1 %2 to) cur ks))
+                   (touched now))))))
+
+(defn- toggle-check*
+  "Checklist `i` with the paragraph the caret is in ticked, or not."
+  [i]
+  (let [i (sync-checks i)
+        k (first (text/line-at (text/of (get-in i [:doc :text])) (get-in i [:doc :caret])))]
+    (update i :checked update k not)))
+
+(defn toggle-check
+  "Tick, or untick, the item the caret is in of the checklist at `path`."
+  [app now path]
+  (if (= :checklist (:kind (inset-at app path)))
+    (touched (at app path toggle-check*) now)
+    app))
 
 (defn list-kind? [i] (contains? #{:list :checklist} (kind i)))
 
@@ -877,17 +942,19 @@
             sync (fn sync [level width]
                    (update level :insets update-vals
                            (fn [i]
-                             (let [i (sync-checks i)]
+                             (let [i (-> i sync-checks sync-levels)]
                                (if (:collapsed? i)
                                  i
                                  (let [w   (max 1 (- width (across app i)))
                                        ctx (ctx-of w)
                                        i (if (and (identical? ctx (:layout-ctx i))
+                                                  (identical? (:levels i) (:laid-levels i))
                                                   (display/same-display? (display/display-key i) (:laid-out i)))
                                            i
                                            (do (vreset! changed? true)
-                                               (assoc i :layout (layout/layout ctx (display/display-text i))
-                                                      :laid-out (display/display-key i) :layout-ctx ctx)))]
+                                               (assoc i :layout (layout/layout ctx (display/display-text i) (:levels i))
+                                                      :laid-out (display/display-key i) :laid-levels (:levels i)
+                                                      :layout-ctx ctx)))]
                                    (sync i w)))))))
             app (sync app wrap)]
         (cond-> (assoc app :inset-ctxs @ctxs) @changed? (assoc :dirty? true))))))
@@ -900,7 +967,7 @@
 (defn- content-height
   "How tall inset `i`'s text is, with its insets, in pixels."
   [i]
-  (+ (* (layout/line-height (:layout i)) (layout/line-count (:layout i)))
+  (+ (layout/content-height (:layout i))
      (reduce + 0 (map :height (:block-places i)))))
 
 (defn- shown-height
@@ -1032,7 +1099,7 @@
   [level]
   (if-let [v (some->> (:inset level) (caret-view level))]
     (let [v  (follow v)
-          lh (layout/line-height (:layout v))
+          lh (geo/caret-line-height v)
           top (caret-top v)
           s  (:scroll v)
           vh (geo/view-height v)]

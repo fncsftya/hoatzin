@@ -56,7 +56,6 @@
   text as scrolled."
   [app]
   (let [L      (:layout app)
-        lh     (layout/line-height L)
         marks  (get-in app [:doc :marks])
         width  (get-in app [:ctx :width])
         ctx    (ui-context app)
@@ -71,7 +70,7 @@
     (loop [bs blocks, extra 0, out []]
       (if-let [{:keys [node line] :as b} (first bs)]
         (let [h (second (ui/measure ctx node))
-              top (+ (* (inc line) lh) extra)
+              top (+ (layout/line-y L (inc line)) extra)
               placed (ui/place ctx node [0 top width h])]
           (recur (next bs) (+ extra h)
                  (conj out (cond-> (-> (dissoc b :node :order)

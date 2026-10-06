@@ -6,6 +6,7 @@
 
     {:content  [\"A line of the note.\"
                 {:type :section :ref 1}
+                {:type :heading :level 1 :text \"A heading\"}
                 {:type :list :content [{:text \"An item\"} {:text \"Another\"}]}
                 {:type :checklist :content [{:text \"Done\" :checked? true}
                                             {:text \"To do\" :checked? false}]}
@@ -24,7 +25,15 @@
   with a bullet or a box, ticked or not; and so is a horizontal rule, a
   line across the text, as HTML's <hr>.
 
+  A line that is a heading is a {:type :heading :level n :text s} in its
+  place, n from 1, the biggest, to 4, and so is an item of a list, as
+  {:text s :level n}.
+
   In normal mode:
+    1 2 3 4     make the lines the selection covers, or the one the caret
+                is in, headings of that size, a multiple of the editor's
+                font size, 1 the biggest; or, if they all are one of that
+                size already, text again
     cmd+s       a section below the line the caret is in, in the text it
                 is in, with a new line after it, and the caret in it
     cmd+shift+k delete the section, list or rule the caret is in or over,
@@ -47,7 +56,8 @@
                 this one: choose the format by its number
     tab         in a list, indent the item, then take it out to the list
                 holding its list, then put it back where it was
-  and in insert mode, cmd+ctrl+s makes a section, cmd+l and cmd+ctrl+l a list and a checklist,
+  and in insert mode, cmd+1 to cmd+4 make headings as 1 to 4 do,
+  cmd+ctrl+s makes a section, cmd+l and cmd+ctrl+l a list and a checklist,
   tab is as in normal mode, return on an empty last item of a list leaves
   it for a new line after it, and in either mode shift+return leaves every
   list the caret is in, or else the section, for a new line after it, in
@@ -70,15 +80,23 @@
 
 (defn- rule? [x] (= {:type :hr} x))
 
+(defn- level? [x] (and (integer? x) (<= 1 x 4)))
+
+(defn- heading? [x]
+  (and (map? x) (= #{:type :level :text} (set (keys x)))
+       (= :heading (:type x)) (level? (:level x)) (string? (:text x))))
+
 (declare list-part?)
 
 (defn- item?
   "Whether `x` is an item of a list (or with `checklist?`, a checklist):
-  a map with a :text and, in a checklist, perhaps :checked?."
+  a map with a :text and, in a checklist, perhaps :checked?, and perhaps
+  a :level, that of a heading."
   [checklist? x]
   (and (map? x) (string? (:text x))
-       (every? (if checklist? #{:text :checked?} #{:text}) (keys x))
-       (boolean? (:checked? x false))))
+       (every? (if checklist? #{:text :checked? :level} #{:text :level}) (keys x))
+       (boolean? (:checked? x false))
+       (or (not (contains? x :level)) (level? (:level x)))))
 
 (defn- list-part?
   "Whether `x` is a list or checklist: its :content its items, and the
@@ -92,8 +110,8 @@
 (defn- check-content
   "`content`, a :content vector, as `where` has it; else refuse it."
   [where content]
-  (when-not (and (vector? content) (every? #(or (string? %) (section-ref? %) (list-part? %) (rule? %)) content))
-    (refuse (str where " must be a vector of strings, {:type :section :ref id},"
+  (when-not (and (vector? content) (every? #(or (string? %) (heading? %) (section-ref? %) (list-part? %) (rule? %)) content))
+    (refuse (str where " must be a vector of strings, {:type :heading :level n :text s}, {:type :section :ref id},"
                  " {:type :list :content [...]}, {:type :checklist :content [...]}"
                  " and {:type :hr}")))
   content)
@@ -126,7 +144,8 @@
                 (:content part))
         items (if (seq items) items [{:text ""}])]
     (cond-> {:kind (:type part) :text (str/join "\n" (map :text items)) :insets insets}
-      (= :checklist (:type part)) (assoc :checked (mapv #(boolean (:checked? %)) items)))))
+      (= :checklist (:type part)) (assoc :checked (mapv #(boolean (:checked? %)) items))
+      (some :level items) (assoc :levels (mapv #(:level % 0) items)))))
 
 (defn- doc-of
   "The doc (see hoatzin.app.modes) of :content vector `content`: its
@@ -135,11 +154,12 @@
   sections docs of their own :content. `seen` notes each section read,
   which may be read only once."
   [content sections seen]
-  (let [{:keys [lines insets]}
+  (let [{:keys [lines levels insets]}
         (reduce (fn [acc part]
                   (let [after (dec (count (:lines acc)))]
                     (cond
-                      (string? part) (update acc :lines conj part)
+                      (string? part) (-> acc (update :lines conj part) (update :levels conj 0))
+                      (heading? part) (-> acc (update :lines conj (:text part)) (update :levels conj (:level part)))
                       (list-part? part) (update acc :insets conj (assoc (list-doc part) :after after))
                       (rule? part) (update acc :insets conj {:kind :rule :text "" :insets [] :after after})
                       :else
@@ -153,9 +173,10 @@
                         (update acc :insets conj
                                 (cond-> (assoc (doc-of (:content section) sections seen) :after after)
                                   title (assoc :title title)))))))
-                {:lines [] :insets []}
+                {:lines [] :levels [] :insets []}
                 content)]
-    {:text (str/join "\n" lines) :insets insets}))
+    (cond-> {:text (str/join "\n" lines) :insets insets}
+      (some pos? levels) (assoc :levels levels))))
 
 (defn- read-auk
   "The text and sections of auk file `s`, as a doc (see
@@ -178,12 +199,13 @@
 (defn- list-part
   "List or checklist `inset` as a part of :content, on one line: its
   items, and its lists after the items they are below."
-  [{:keys [kind text checked insets]}]
+  [{:keys [kind text checked levels insets]}]
   (let [items (str/split text #"\n" -1)
         below (group-by :after insets)
         item  (fn [k s]
                 (str "{:text " (pr-str s)
                      (when (= :checklist kind) (str " :checked? " (boolean (get checked k))))
+                     (when (pos? (get levels k 0)) (str " :level " (get levels k)))
                      "}"))]
     (str "{:type " kind " :content ["
          (str/join " " (concat (map list-part (below -1))
@@ -197,7 +219,7 @@
   numbered as they come, each one's own :content the same."
   [doc]
   (let [sections (volatile! [])
-        parts-of (fn parts-of [{:keys [text insets]}]
+        parts-of (fn parts-of [{:keys [text insets levels]}]
                    (let [lines (str/split text #"\n" -1)
                          ;; an empty text with everything above it is no line at all
                          lines (if (and (= [""] lines) (seq insets) (every? #(neg? (:after %)) insets))
@@ -215,11 +237,17 @@
                                    (str "{:type :section :ref " id "}")))]
                      (reduce (fn [parts item]
                                (conj parts (cond (string? item) (pr-str item)
+                                                 (vector? item) (str "{:type :heading :level " (second item)
+                                                                     " :text " (pr-str (nth item 2)) "}")
                                                  (#{:list :checklist} (:kind item)) (list-part item)
                                                  (= :rule (:kind item)) "{:type :hr}"
                                                  :else (ref item))))
                              []
-                             (concat (below -1) (mapcat (fn [i line] (cons line (below i))) (range) lines)))))
+                             (concat (below -1)
+                                     (mapcat (fn [i line]
+                                               (let [n (get levels i 0)]
+                                                 (cons (if (pos? n) [:heading n line] line) (below i))))
+                                             (range) lines)))))
         parts (parts-of doc)]
     (str "{:content\n ["
          (str/join "\n  " parts)
@@ -238,11 +266,15 @@
 
 (defn- blocks
   "The parts of `doc`, in order: a vector of lines for each paragraph (a
-  run of lines that aren't blank), and each inset as it is."
-  [{:keys [text insets]}]
+  run of lines that aren't blank), each heading as {:kind :heading :level
+  :text}, and each inset as it is."
+  [{:keys [text insets levels]}]
   (let [below (group-by :after insets)
         parts (concat (below -1)
-                      (mapcat (fn [i line] (cons line (below i)))
+                      (mapcat (fn [i line]
+                                (let [n (get levels i 0)]
+                                  (cons (if (pos? n) {:kind :heading :level n :text (str/trim line)} line)
+                                        (below i))))
                               (range) (str/split text #"\n" -1)))]
     (:out
      (reduce (fn [{:keys [out open?] :as acc} part]
@@ -285,10 +317,12 @@
                   :else
                   (case (:kind block)
                     :rule [(str q "---")]
+                    :heading [(str q (apply str (repeat (:level block) "#")) " " (:text block))]
                     (:list :checklist) (map #(str q %) (md-list block 0))
                     (let [n (str nest "> ")]
                       (md-lines (cond-> block
-                                  (:title block) (update :text #(str "**" (:title block) "**\n\n" %)))
+                                  (:title block) (-> (update :text #(str "**" (:title block) "**\n\n" %))
+                                                     (update :levels #(when % (into [0 0] %)))))
                                 n (str nest ">") (str nest "    "))))))]
     (->> (blocks doc)
          (map (comp vec piece))
@@ -338,6 +372,7 @@
               :else
               (case (:kind block)
                 :rule ["<hr>"]
+                :heading [(str "<h" (:level block) ">" (escape-html (:text block)) "</h" (:level block) ">")]
                 (:list :checklist) (html-list block)
                 (concat ["<section>"]
                         (when (:title block)
@@ -410,12 +445,21 @@
 
 (defn- add [spec] (fn [app now] (mode/add-inset app now spec)))
 
+(defn- heading
+  "A command making the lines of the selection headings of `level`."
+  [level]
+  (fn [app now] (mode/set-heading app now level)))
+
 {:name        "auk"
  :extensions  ["auk"]
  :read        read-auk
  :write       write-auk
  :inset-title "Section"
- :normal      {"cmd+s"  (add {})
+ :normal      {"1"      (heading 1)
+               "2"      (heading 2)
+               "3"      (heading 3)
+               "4"      (heading 4)
+               "cmd+s"  (add {})
                "e"      export
                "cmd+shift+k" delete-inset
                "cmd+shift+o" (fn [app now] (mode/line-above app now))
@@ -427,14 +471,19 @@
                "t"      tick
                "tab"    (fn [app now] (mode/cycle-indent app now))
                "shift+return" (fn [app now] (mode/leave-inset app now))}
- :insert      {"cmd+ctrl+s"   (add {})
+ :insert      {"cmd+1"        (heading 1)
+               "cmd+2"        (heading 2)
+               "cmd+3"        (heading 3)
+               "cmd+4"        (heading 4)
+               "cmd+ctrl+s"   (add {})
                "cmd+l"        (add {:kind :list})
                "cmd+ctrl+l"   (add {:kind :checklist})
                "tab"          (fn [app now] (mode/cycle-indent app now))
                "return"       (fn [app now] (mode/list-return app now false))
                "shift+return" (fn [app now] (mode/leave-inset app now))}
  :help        [["Auk mode"
-                [["cmd+s" "add a section below the line (cmd+ctrl+s inserting)"]
+                [["1 2 3 4" "make a heading, or text (cmd+1 inserting)"]
+                 ["cmd+s" "add a section below the line (cmd+ctrl+s inserting)"]
                  ["cmd+shift+k" "delete section, list or rule"]
                  ["cmd+shift+o" "new line above the section or list"]
                  ["space" "fold or unfold the section"]

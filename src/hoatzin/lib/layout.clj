@@ -11,7 +11,10 @@
   the lines that changed since: see hoatzin.lib.text/changed-lines.
 
   A paragraph is plain data, {:text :length :u16 :lines}, its lines just
-  where it breaks. The CTLines that measure and draw lines are set only for
+  where it breaks. One that is a heading also has its :level, 1 to
+  `max-heading`, and :lh, its line height: its font is the text's scaled by
+  `heading-scales`, and its lines are taller. Each context's levels are
+  given with the text, one for each paragraph, 0 for the text's own. The CTLines that measure and draw lines are set only for
   the lines asked about, mostly those on screen, and cached in the context
   by their text until `trim!` finds them unused."
   (:require [hoatzin.lib.coretext :as ct]
@@ -33,6 +36,23 @@
      :baseline     (+ gap a)           ; from the line's top
      :caret-top    gap
      :caret-height (+ a d)}))
+
+(def heading-scales
+  "The size of a heading's font, by its level, as a multiple of the text's."
+  {1 2.0, 2 1.6, 3 1.3, 4 1.15})
+
+(def max-heading "The deepest level of heading there is." (count heading-scales))
+
+(defn level-at
+  "The level of paragraph `i`, given `levels`, a vector with one for each
+  paragraph, or nil for none."
+  [levels i]
+  (if levels (get levels i 0) 0))
+
+(defn- levels-for
+  "The levels of paragraphs [i, j), given `levels`, or nil if there are none."
+  [levels i j]
+  (when levels (mapv #(level-at levels %) (range i j))))
 
 ;; ---------------------------------------------------------------- UTF-16
 
@@ -112,16 +132,79 @@
         (ct/rewrap font old text width (cp->u16 old p) (cp->u16 old ea) (cp->u16 new eb))]
     (assoc new :length length :lines lines)))
 
-;; A paragraph's :len counts its newline; its :w is its visual lines.
-(def ^:private spec {:len #(inc (count (:text %))) :w #(count (:lines %))})
+;; A paragraph's :len counts its newline; its :w is its visual lines; its :h
+;; is their height, `lh` each unless it has a :lh of its own.
+(defn- spec-of [lh]
+  {:len #(inc (count (:text %))) :w #(count (:lines %))
+   :h #(* (count (:lines %)) (:lh % lh))})
 
 (defn context
   "A layout context: `font` (from hoatzin.lib.coretext/font) wrapped to `width`
   px. Release it with `release-context`."
   [font width]
-  {:font font :width width :metrics (metrics font) :current (atom nil)
-   ;; CTLines by their text, each with the generation that last used it
-   :ctlines (atom {:gen 0 :entries {}})})
+  (let [m (metrics font)]
+    {:font font :width width :metrics m :current (atom nil)
+     :spec (spec-of (:line-height m))
+     ;; the fonts of the headings, and their metrics, by level, made when wanted
+     :fonts (atom {}) :level-metrics (atom {0 m})
+     ;; CTLines by their text, each with the generation that last used it
+     :ctlines (atom {:gen 0 :entries {}})}))
+
+(defn- font-of
+  "The font of paragraphs of `level` in `ctx`."
+  [{:keys [font fonts]} level]
+  (if (zero? level)
+    font
+    (or (get @fonts level)
+        (let [f (ct/font (:family font) (* (:size font) (get heading-scales level)))]
+          (swap! fonts assoc level f)
+          f))))
+
+(defn- metrics-of
+  "The line metrics of paragraphs of `level` in `ctx`."
+  [{:keys [level-metrics] :as ctx} level]
+  (or (get @level-metrics level)
+      (let [m (metrics (font-of ctx level))]
+        (swap! level-metrics assoc level m)
+        m)))
+
+(defn- leveled
+  "Paragraphs `paras`, wrapped as headings of `level`, noted as such."
+  [ctx level paras]
+  (if (zero? level)
+    paras
+    (let [lh (:line-height (metrics-of ctx level))]
+      (mapv #(assoc % :level level :lh lh) paras))))
+
+(defn- paragraphs-at
+  "Paragraphs for the strings `texts`, wrapped, each in the font of its
+  level in `levels`, one for each of them, or nil for none."
+  [{:keys [font width] :as ctx} texts levels]
+  (if-not (some pos? levels)
+    (paragraphs-of font width texts)
+    (into []
+          (mapcat (fn [run]
+                    (let [level (second (first run))]
+                      (leveled ctx level (paragraphs-of (font-of ctx level) width (map first run))))))
+          (partition-by second (map vector texts levels)))))
+
+(defn- rewrap-at
+  "Paragraph `old` edited to `text`, as `rewrap` has it, in `level`."
+  [{:keys [width] :as ctx} old text level]
+  (if (= level (:level old 0))
+    (first (leveled ctx level [(rewrap (font-of ctx level) width old text)]))
+    (first (paragraphs-at ctx [text] [level]))))
+
+(defn- releveled
+  "Tree `t` of paragraphs with those whose level is not as `levels` has it
+  wrapped again."
+  [{:keys [spec] :as ctx} t levels]
+  (let [stale (tree/fold spec t 0 (tree/n t)
+                         (fn [acc p i _ _] (if (= (:level p 0) (level-at levels i)) acc (conj acc [i p])))
+                         [])]
+    (reduce (fn [t [i p]]
+              (tree/splice spec t i (inc i) (paragraphs-at ctx [(:text p)] [(level-at levels i)])))
+            t stale)))
 
 (def ^:private spare-lines
   "CTLines kept past those in use, most recently used first."
@@ -146,38 +229,48 @@
         (swap! ctlines update :entries #(apply dissoc % (map key stale)))))
     (swap! ctlines update :gen inc)))
 
-(defn release-context [{:keys [current ctlines]}]
+(defn release-context [{:keys [current ctlines fonts]}]
   (doseq [[_ e] (:entries @ctlines)] (ct/release (:line e)))
+  (run! ct/release-font (vals @fonts))
+  (reset! fonts {})
   (reset! ctlines {:gen 0 :entries {}})
   (reset! current nil))
 
 (defn layout
   "Lay out `txt` (a hoatzin.lib.text, or a string) in `ctx`, re-wrapping only
-  the lines that differ from the context's last layout.
+  the lines that differ from the context's last layout. `levels`, if given,
+  has the level of each paragraph (0 for text, 1 to `max-heading` for a
+  heading): they are as long as the text has paragraphs, or shorter, the
+  rest being text.
 
-  Returns {:tree :text :metrics :font :ctlines}; the functions below answer
-  questions of it."
-  [{:keys [font width metrics current ctlines]} txt]
-  (let [txt  (text/of txt)
-        old  @current
-        fresh #(tree/build spec (paragraphs-of font width (text/lines txt)))
-        t    (if (nil? old)
-               (fresh)
-               (let [[i ja jb] (text/changed-lines (:text old) txt)
-                     t (:tree old)]
-                 (cond
-                   (= i ja jb) t
-                   ;; one line edited, as typing does: re-break just around the edit
-                   (= (inc i) ja jb)
-                   (tree/splice spec t i ja [(rewrap font width (tree/get-item spec t i)
-                                                     (text/line txt i))])
-                   ;; a new text altogether, as opening a file gives
-                   (and (zero? i) (= ja (tree/n t))) (fresh)
-                   :else
-                   (tree/splice spec t i ja (paragraphs-of font width (text/lines txt i jb))))))
-        L    {:tree t :text txt :metrics metrics :font font :ctlines ctlines}]
-    (reset! current L)
-    L))
+  Returns {:tree :text :levels :metrics :font :ctlines :ctx}; the
+  functions below answer questions of it."
+  ([ctx txt] (layout ctx txt nil))
+  ([{:keys [metrics current ctlines spec] :as ctx} txt levels]
+   (let [txt  (text/of txt)
+         old  @current
+         fresh #(tree/build spec (paragraphs-at ctx (text/lines txt)
+                                                (levels-for levels 0 (text/line-count txt))))
+         t    (if (nil? old)
+                (fresh)
+                (let [[i ja jb] (text/changed-lines (:text old) txt)
+                      t (:tree old)]
+                  (cond
+                    (= i ja jb) t
+                    ;; one line edited, as typing does: re-break just around the edit
+                    (= (inc i) ja jb)
+                    (tree/splice spec t i ja [(rewrap-at ctx (tree/get-item spec t i)
+                                                         (text/line txt i) (level-at levels i))])
+                    ;; a new text altogether, as opening a file gives
+                    (and (zero? i) (= ja (tree/n t))) (fresh)
+                    :else
+                    (tree/splice spec t i ja (paragraphs-at ctx (text/lines txt i jb)
+                                                            (levels-for levels i jb))))))
+         t    (if (or (nil? old) (identical? levels (:levels old))) t (releveled ctx t levels))
+         L    {:tree t :text txt :levels levels :metrics metrics :font (:font ctx) :ctlines ctlines
+               :ctx ctx :spec spec}]
+     (reset! current L)
+     L)))
 
 ;; ---------------------------------------------------------------- queries
 
@@ -185,16 +278,19 @@
 (defn paragraphs
   "Every paragraph, as {:text :length :u16 :lines}: for tests."
   [L]
-  (tree/items spec (:tree L)))
-(defn line-height [L] (get-in L [:metrics :line-height]))
+  (tree/items (:spec L) (:tree L)))
+(defn line-height
+  "The height of a line of text that is not a heading."
+  [L]
+  (get-in L [:metrics :line-height]))
 
 (defn- para
   "The paragraph where the running sum of `dim` passes `x`, as
-  {:p :i :start :end :first-line}: by :len, the one holding document
+  {:p :i :start :end :first-line :y}, :y the height above it: by :len, the one holding document
   position x; by :w, the one holding visual line x."
   [L dim x]
-  (let [[p i start first-line] (tree/locate spec (:tree L) dim x)]
-    {:p p :i i :start start :end (+ start (count (:text p))) :first-line first-line}))
+  (let [[p i start first-line y] (tree/locate (:spec L) (:tree L) dim x)]
+    {:p p :i i :start start :end (+ start (count (:text p))) :first-line first-line :y y}))
 
 (defn- para-at [L pos] (para L :len pos))
 (defn- para-of-line [L k] (para L :w k))
@@ -216,31 +312,63 @@
       (subs text (u16->cp p start) (u16->cp p end)))))
 
 (defn- ctline
-  "The CTLine of line text `s`, from the cache or set now; nil for \"\"."
-  [{:keys [font ctlines]} s]
+  "The CTLine of line text `s` of a paragraph of `level`, from the cache or
+  set now; nil for \"\"."
+  [{:keys [ctx ctlines]} level s]
   (when (seq s)
-    (let [{:keys [gen entries]} @ctlines]
-      (if-let [e (get entries s)]
-        (do (when-not (= gen (:used e)) (swap! ctlines assoc-in [:entries s :used] gen))
+    (let [{:keys [gen entries]} @ctlines
+          k (if (zero? level) s [level s])]
+      (if-let [e (get entries k)]
+        (do (when-not (= gen (:used e)) (swap! ctlines assoc-in [:entries k :used] gen))
             (:line e))
-        (let [line (ct/make-line font s)]
-          (swap! ctlines assoc-in [:entries s] {:line line :used gen})
+        (let [line (ct/make-line (font-of ctx level) s)]
+          (swap! ctlines assoc-in [:entries k] {:line line :used gen})
           line)))))
 
 (defn- set-line
   "Line `j` of paragraph `p`, ready to measure: {:start :end :text, :line
   its CTLine and :base its start, as hoatzin.lib.coretext's line functions take
-  it}. Good until the next `trim!`."
+  it, :level and its :metrics}. Good until the next `trim!`."
   [L p j]
   (let [{:keys [start] :as ln} (nth (:lines p) j)
-        s (line-text p ln)]
-    (assoc ln :text s :line (ctline L s) :base start)))
+        s (line-text p ln)
+        level (:level p 0)]
+    (assoc ln :text s :line (ctline L level s) :base start
+           :level level :metrics (metrics-of (:ctx L) level))))
 
 (defn visual-line
-  "Visual line `k`: {:line ctline :text s}, good until the next `trim!`."
+  "Visual line `k`: {:line ctline :text s :level :metrics}, good until the
+  next `trim!`."
   [L k]
   (let [[{:keys [p]} j] (line-ref L k)]
     (set-line L p j)))
+
+(defn line-metrics
+  "The line metrics (see `metrics`) of visual line `k`: of its font, a
+  heading's being taller."
+  [L k]
+  (let [[{:keys [p]}] (line-ref L k)]
+    (metrics-of (:ctx L) (:level p 0))))
+
+(defn line-y
+  "Where visual line `k` starts, in pixels down the text; `k` the number of
+  lines is where the text ends."
+  [L k]
+  (cond
+    (<= k 0)                 0
+    (>= k (line-count L))    (tree/h (:tree L))
+    :else (let [{:keys [p first-line y]} (para-of-line L k)]
+            (+ y (* (- k first-line) (:lh p (line-height L)))))))
+
+(defn line-at-y
+  "The visual line at `y` pixels down the text, clamped to the text."
+  [L y]
+  (let [[p _ _ first-line above] (tree/locate (:spec L) (:tree L) :h y)]
+    (+ first-line (-> (quot (- (long y) above) (:lh p (line-height L)))
+                      (max 0)
+                      (min (dec (count (:lines p))))))))
+
+(defn content-height "How tall the text is, in pixels." [L] (tree/h (:tree L)))
 
 (defn- line-index
   "The line of paragraph `p` holding UTF-16 index `u`: the last one starting
@@ -315,7 +443,7 @@
   (let [k0 (max k0 0)
         k1 (min k1 (line-count L))]
     (if (< k0 k1)
-      (tree/fold spec (:tree L) (:i (para-of-line L k0)) (inc (:i (para-of-line L (dec k1))))
+      (tree/fold (:spec L) (:tree L) (:i (para-of-line L k0)) (inc (:i (para-of-line L (dec k1))))
                  (fn [acc p i start first-line]
                    (conj acc {:p p :i i :start start :end (+ start (count (:text p)))
                               :first-line first-line}))

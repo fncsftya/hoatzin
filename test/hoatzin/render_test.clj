@@ -371,6 +371,25 @@
     (t/type! s "Diet")
     (t/matches-golden? "auk-renaming" (t/render! s))))
 
+(deftest ^:integration auk-headings
+  ;; the four sizes, a heading that wraps, one in a section and one in a
+  ;; list, and the selection over a heading
+  (with-session [s :mode :normal :height 520]
+    (t/send! s {:type :opened :path "/notes/hoatzin.auk"
+                :text (pr-str {:content [{:type :heading :level 1 :text "The hoatzin"}
+                                         {:type :heading :level 2 :text "Where it lives, and what it eats, in the swamps"}
+                                         "Hoatzin chicks have claws."
+                                         {:type :heading :level 3 :text "Diet"}
+                                         {:type :heading :level 4 :text "Leaves"}
+                                         {:type :section :ref 1}
+                                         {:type :list :content [{:text "flowers" :level 3} {:text "fruit"}]}]
+                               :sections [{:id 1 :title "Notes"
+                                           :content [{:type :heading :level 2 :text "In a box"} "and text"]}]})})
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "m")
+    (t/press! s sdl/K-DOWN)
+    (t/matches-golden? "auk-headings" (t/render! s))))
+
 (deftest ^:integration auk-lists
   ;; a list and a checklist, one item ticked, an item wrapping
   (with-session [s :mode :normal :height 400]

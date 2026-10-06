@@ -26,7 +26,6 @@
   [v i k0 k1]
   (let [{:keys [renderer scratch scroll]} v
         [ox oy] (origin v)
-        lh   (layout/line-height (:layout v))
         gw   (px v insets/gutter)
         side (px v 10)
         bw   (max 1 (px v 1))
@@ -34,7 +33,8 @@
                 (sdl/set-render-draw-color renderer r g b 255)
                 (sdl/render-fill-rect renderer (sdl/set-frect! (:frect scratch) x y w h)))]
     (doseq [[k checked?] (insets/markers v i k0 k1)
-            :let [y (+ oy (- (line-top v k) scroll))]]
+            :let [y (+ oy (- (line-top v k) scroll))
+                  lh (:line-height (layout/line-metrics (:layout v) k))]]
       (if (nil? checked?)
         (draw-text! v (:ui v) [:bullet (:foreground v)] "•" [(- ox gw) y gw lh] (:foreground v) true (:clip v))
         (let [x (+ (- ox gw) (quot (- gw side) 2))

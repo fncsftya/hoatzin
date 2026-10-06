@@ -28,9 +28,10 @@
     (if (and (> n 1) (= "" (text/line t (dec n)))) (dec n) n)))
 
 (defn mark-saved
-  "The app with its insets as they are noted as those in its file."
+  "The app with its insets, and its headings, as they are noted as those in
+  its file."
   [app]
-  (assoc app :saved-insets (insets/snapshot app)))
+  (assoc app :saved-insets (insets/snapshot app) :saved-levels (insets/levels-of app)))
 
 (defn sync-modified
   "Whether the text, or its insets (see hoatzin.app.insets), differs from
@@ -39,10 +40,11 @@
   then this costs little."
   [{:keys [doc saved compared] :as app}]
   (let [text (:text doc)
-        now  [text saved (:insets app) (:saved-insets app)]]
+        now  [text saved (:insets app) (:saved-insets app) (:levels app) (:saved-levels app)]]
     (if (and compared (every? true? (map identical? now compared)))
       app
-      (let [modified? (or (not= text saved) (not= (insets/snapshot app) (:saved-insets app [])))]
+      (let [modified? (or (not= text saved) (not= (insets/snapshot app) (:saved-insets app []))
+                          (not= (insets/levels-of app) (:saved-levels app)))]
         (cond-> (assoc app :compared now :modified? modified?)
           (not= modified? (:modified? app)) (assoc :dirty? true))))))
 
@@ -55,7 +57,8 @@
   (let [t    (get-in app [:doc :text])
         file (file-name path)
         mode (or (:major-mode app) (modes/for-path app path))
-        doc  {:text (str t) :insets (insets/snapshot app)}
+        doc  (cond-> {:text (str t) :insets (insets/snapshot app)}
+               (insets/levels-of app) (assoc :levels (insets/levels-of app)))
         {s :text error :error} (modes/write-text app mode doc)
         error (or error ((:write-file-fn app) path s))]
     (assoc (if error

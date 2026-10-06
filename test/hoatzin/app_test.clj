@@ -2029,6 +2029,181 @@
     (is (= [[0 "a"]] (sections s)))
     (is (= [0] (insets/path (t/app s))) "the caret is back in the outer one")))
 
+;; ---------------------------------------------------------------- auk headings
+
+(defn- levels [s] (insets/levels-of (t/app s)))
+
+(def ^:private K-1 0x31)
+
+(defn- heading [n] {:type :heading :level n :text "x"})
+
+(deftest auk-reads-and-writes-headings
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :heading :level 2 :text "two"} "three" {:type :heading :level 1 :text ""}]})
+    (is (= "one\ntwo\nthree\n" (t/text s)))
+    (is (= [0 2 0 1] (levels s)))
+    (is (not (:modified? (t/app s))))
+    (t/command! s "w")
+    (is (= "{:content\n [\"one\"\n  {:type :heading :level 2 :text \"two\"}\n  \"three\"\n  {:type :heading :level 1 :text \"\"}]}\n"
+           (get-in @s [:files "/notes/n.auk"])))))
+
+(deftest auk-reads-and-writes-headings-in-sections-and-lists
+  (with-session [s :mode :normal]
+    (auk! s {:content [(ref 1) {:type :list :content [{:text "a" :level 3} {:text "b"}]}]
+             :sections [{:id 1 :content [{:type :heading :level 4 :text "in"}]}]})
+    (is (= [[-1 "in"] [-1 "a\nb"]] (sections s)))
+    (is (= [4] (:levels (first (insets/snapshot (t/app s))))))
+    (is (= [3 0] (:levels (second (insets/snapshot (t/app s))))))
+    (is (not (:modified? (t/app s))))
+    (t/command! s "w")
+    (is (= (str "{:content\n [{:type :section :ref 1}\n  {:type :list :content [{:text \"a\" :level 3} {:text \"b\"}]}]\n"
+                " :sections\n [{:id 1 :content [{:type :heading :level 4 :text \"in\"}]}]}\n")
+           (get-in @s [:files "/notes/n.auk"])))))
+
+(deftest auk-refuses-headings-it-cannot-read
+  (doseq [data [{:content [{:type :heading :level 5 :text "x"}]}
+                {:content [{:type :heading :level 0 :text "x"}]}
+                {:content [{:type :heading :level 1}]}
+                {:content [{:type :list :content [{:text "a" :level 7}]}]}]]
+    (with-session [s :mode :normal]
+      (auk! s data)
+      (is (str/starts-with? (:message (t/app s)) "Can't open n.auk: ") (pr-str data)))))
+
+(deftest a-number-makes-the-line-a-heading-of-that-size
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" "two" "three"]})
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "2")
+    (is (= [0 2 0] (levels s)))
+    (is (= "one\ntwo\nthree" (t/text s)) "the text is as it was")
+    (is (:modified? (t/app s)) "a heading is a change")
+    (testing "another number changes the size"
+      (t/type! s "3")
+      (is (= [0 3 0] (levels s))))
+    (testing "the same number again makes it text"
+      (t/type! s "3")
+      (is (nil? (levels s)))
+      (is (not (:modified? (t/app s)))))
+    (testing "in each of the four sizes"
+      (doseq [n [1 2 3 4]]
+        (t/type! s (str n))
+        (is (= [0 n 0] (levels s)))
+        (t/type! s (str n))))
+    (testing "and the file keeps them"
+      (t/type! s "1")
+      (t/command! s "w")
+      (is (= "{:content\n [\"one\"\n  {:type :heading :level 1 :text \"two\"}\n  \"three\"]}\n"
+             (get-in @s [:files "/notes/n.auk"])))
+      (is (not (:modified? (t/app s)))))))
+
+(deftest a-number-makes-every-line-of-the-selection-a-heading
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" "two" "three" "four"]})
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "3")
+    (t/press! s sdl/K-UP)
+    (t/type! s "m")
+    (t/press! s sdl/K-DOWN)
+    (t/press! s sdl/K-DOWN)
+    (is (= "one\ntwo\n" (t/selected s)) "the selection ends at the start of the third line")
+    (t/type! s "2")
+    (is (= [2 2 0 0] (levels s)) "the lines it covers, and no more: a mixture all become the size")
+    (testing "text again only if they all are of that size"
+      (t/type! s "2")
+      (is (nil? (levels s))))))
+
+(deftest cmd-and-a-number-makes-a-heading-in-insert-mode
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" "two"]})
+    (t/type! s "A")
+    (t/press! s K-1 cmd)
+    (is (= :insert (:mode (t/app s))) "still inserting")
+    (is (= [1 0] (levels s)))
+    (t/type! s " more")
+    (is (= "one more\ntwo" (t/text s)) "typing goes on")
+    (is (= [1 0] (levels s)) "in the heading")
+    (t/press! s K-1 cmd)
+    (is (nil? (levels s)) "the same size again, and it is text")
+    (t/press! s (+ K-1 3) cmd)
+    (is (= [4 0] (levels s)))
+    (is (= "1" (do (t/type! s "1") (subs (t/text s) 8 9))) "a number alone is typed")))
+
+(deftest headings-follow-the-text-as-it-is-edited
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :heading :level 2 :text "two"} "three"]})
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "A")
+    (t/press! s sdl/K-RETURN)
+    (t/type! s "after")
+    (is (= "one\ntwo\nafter\nthree" (t/text s)))
+    (is (= [0 2 0 0] (levels s)) "a line made after a heading is text")
+    (t/press! s sdl/K-ESCAPE)
+    (dotimes [_ 3] (t/press! s sdl/K-UP))
+    (t/type! s "O")
+    (t/type! s "new")
+    (is (= [0 0 2 0 0] (levels s)) "a line above moves it down")
+    (t/press! s sdl/K-ESCAPE)
+    (t/command! s "w")
+    (is (= (str "{:content\n [\"new\"\n  \"one\"\n  {:type :heading :level 2 :text \"two\"}\n"
+                "  \"after\"\n  \"three\"]}\n")
+           (get-in @s [:files "/notes/n.auk"])))))
+
+(deftest a-heading-is-in-the-text-the-caret-is-in
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" (ref 1)] :sections [{:id 1 :content ["in" "side"]}]})
+    (t/press! s sdl/K-DOWN)
+    (t/type! s "3")
+    (is (nil? (levels s)) "not the text outside")
+    (is (= [[0 "in\nside"]] (sections s)))
+    (is (= [3 0] (:levels (first (insets/snapshot (t/app s))))))
+    (is (:modified? (t/app s)))
+    (t/command! s "w")
+    (is (= (str "{:content\n [\"one\"\n  {:type :section :ref 1}]\n"
+                " :sections\n [{:id 1 :content [{:type :heading :level 3 :text \"in\"} \"side\"]}]}\n")
+           (get-in @s [:files "/notes/n.auk"])))))
+
+(deftest headings-are-taller-than-text
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" "two" "three"]})
+    (let [h #(layout/content-height (:layout (t/app s)))
+          before (h)]
+      (t/press! s sdl/K-DOWN)
+      (t/type! s "1")
+      (is (> (h) before))
+      (is (= (h) (geo/content-height (t/app s))))
+      (let [lh (layout/line-height (:layout (t/app s)))]
+        (is (= lh (geo/line-top (t/app s) 1)))
+        (is (> (geo/line-top (t/app s) 2) (+ lh lh)) "the line after it is further down")
+        (is (= 1 (geo/line-at-y (t/app s) (+ lh 1))))
+        (is (= 2 (geo/line-at-y (t/app s) (geo/line-top (t/app s) 2)))))
+      (t/type! s "1")
+      (is (= before (h))))))
+
+(deftest headings-are-in-the-markdown-and-html-exports
+  (with-session [s :mode :normal]
+    (auk! s {:content ["intro" {:type :heading :level 1 :text "Big"} "text" {:type :heading :level 3 :text "Small <b>"}]})
+    (t/command! s "w")
+    (t/type! s "e")
+    (t/type! s "1")
+    (is (= "intro\n\n# Big\n\ntext\n\n### Small <b>\n" (get-in @s [:files "/notes/n.md"])))
+    (t/type! s "e")
+    (t/type! s "2")
+    (is (str/includes? (get-in @s [:files "/notes/n.html"]) "<h1>Big</h1>"))
+    (is (str/includes? (get-in @s [:files "/notes/n.html"]) "<h3>Small &lt;b&gt;</h3>"))))
+
+(deftest headings-survive-a-revert-and-a-new-buffer
+  (with-session [s :mode :normal]
+    (auk! s {:content ["one" {:type :heading :level 2 :text "two"}]})
+    (t/type! s "1")
+    (is (= [1 2] (levels s)))
+    (open! s "/notes/other.auk" "{:content [\"x\"]}")
+    (is (nil? (levels s)) "another buffer has none")
+    (auk! s {:content ["one" {:type :heading :level 2 :text "two"}]})
+    (is (= [1 2] (levels s)) "and each has its own")
+    (swap! s assoc-in [:files "/notes/n.auk"] (pr-str {:content ["one" {:type :heading :level 2 :text "two"}]}))
+    (t/command! s "revert")
+    (is (= [0 2] (levels s)) "reverting reads them from the file")))
+
 (deftest a-section-has-its-own-undo
   (with-session [s :mode :normal]
     (auk! s {:content ["one"]})

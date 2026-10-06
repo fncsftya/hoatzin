@@ -36,7 +36,7 @@
   "What the app holds of the current buffer, at its top level."
   [:buffer-id :buffer-name :scratch? :path :dir :doc :saved :modified? :compared
    :undo :undo-tail :undo-chain :scroll :goal-x :upstream? :blocks :major-mode
-   :minor-modes :minor-since :search :insets :inset :before? :xsel :next-inset-id :saved-insets :variants :dims :next-variant-id
+   :minor-modes :minor-since :search :insets :inset :before? :xsel :next-inset-id :saved-insets :levels :levels-text :saved-levels :variants :dims :next-variant-id
    :tag :tag-color])
 
 (def ^:private passing-keys
@@ -167,7 +167,7 @@
           (let [t (text/of text)]
             (-> (add app now {:path path :dir (files/parent path) :saved t :major-mode mode
                               :doc (assoc ed/empty-doc :text t)})
-                (insets/load-all (:insets doc))
+                (insets/load-all (:insets doc) (:levels doc))
                 files/mark-saved
                 (assoc :message (str "\"" file "\" " (files/file-lines t) " lines"))
                 modes/opened)))))))
@@ -175,11 +175,11 @@
 (defn- recovered-doc
   "The current buffer's :doc, and its insets, as recovered buffer `r` had
   them."
-  [app {:keys [text insets caret]}]
+  [app {:keys [text insets levels caret]}]
   (let [t (text/of text)]
     (-> app
         (assoc :doc {:text t :caret (min (or caret 0) (count t))})
-        (insets/load-all insets))))
+        (insets/load-all insets levels))))
 
 (def recovered-scratch-name "scratch (recovered)")
 
@@ -205,7 +205,7 @@
                  app   (-> (add app now {:path path :dir dir :major-mode mode :saved saved
                                          :buffer-name (if scratch? recovered-scratch-name name)
                                          :doc (assoc ed/empty-doc :text saved)})
-                           (insets/load-all (:insets file))
+                           (insets/load-all (:insets file) (:levels file))
                            files/mark-saved
                            (recovered-doc r)
                            (cond-> path modes/opened))]
@@ -277,7 +277,7 @@
               (assoc :doc doc :saved (:text doc) :goal-x nil :upstream? false
                      :message (str "Reverted \"" file "\" " (files/file-lines t) " lines"))
               (history/record old 0 (count (:text old)) s)
-              (insets/load-all (:insets read))
+              (insets/load-all (:insets read) (:levels read))
               files/mark-saved
               modes/opened
               (touched now)))))

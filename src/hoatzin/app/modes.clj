@@ -65,7 +65,9 @@
   (-1: above the first) and each with its own insets, as a doc has them,
   and with its :kind (:section, :list, :checklist or :rule, a line
   across the text, with no text of its own), :title and, for a
-  checklist, :checked, a tick for each paragraph, if it has them. :read
+  checklist, :checked, a tick for each paragraph, if it has them. A doc
+  and each inset may have :levels too, a heading level for each of its
+  paragraphs (0, text, up to 4), or for the first of them. :read
   may answer just the text, a string, and leave out an inset's :insets. :read and :write
   may throw to say the file can't be: what they throw says why. A mode
   without them reads and writes the text as it is, and can't write
@@ -184,10 +186,18 @@
   [app options chosen]
   (choose/ask app options (guarded chosen)))
 
+(defn- set-heading
+  "The app with the paragraphs the selection covers, or else the one the
+  caret is in, headings of `level`, 1 to 4, or, if they all are
+  already, text again."
+  [app now level]
+  (insets/set-heading app now level))
+
 (defn- doc
   "The current buffer's text with its insets, as :write has it."
   [app]
-  {:text (text app) :insets (insets/snapshot app)})
+  (cond-> {:text (text app) :insets (insets/snapshot app)}
+    (insets/levels-of app) (assoc :levels (insets/levels-of app))))
 
 (defn- write-beside
   "Write string `s` to a file beside the current buffer's, named as it is
@@ -225,6 +235,7 @@
    'leave-inset   (sci/copy-var leave-inset api-ns)
    'confirm       (sci/copy-var ask api-ns)
    'choose        (sci/copy-var choose api-ns)
+   'set-heading   (sci/copy-var set-heading api-ns)
    'doc           (sci/copy-var doc api-ns)
    'file-title    (sci/copy-var file-title api-ns)
    'write-beside  (sci/copy-var write-beside api-ns)})
@@ -288,6 +299,12 @@
     (some (fn [[name m]] (when (and (not (minor? m)) (some #{ext} (:extensions m))) name))
           (sort-by key (:modes app)))))
 
+(defn- levels?
+  "Whether `v` could be the :levels of a doc: nil, or a vector of heading
+  levels."
+  [v]
+  (or (nil? v) (and (vector? v) (every? #(and (integer? %) (<= 0 % 4)) v))))
+
 (defn- inset-spec?
   "Whether `i` is an inset of a doc: below a paragraph (or -1), of a kind
   there is, and a doc itself."
@@ -296,13 +313,14 @@
        (contains? #{nil :section :list :checklist :rule} (:kind i))
        ((some-fn nil? string?) (:title i))
        ((some-fn nil? #(every? boolean? %)) (:checked i))
+       (levels? (:levels i))
        (map? i) (string? (:text i))
        (every? inset-spec? (:insets i))))
 
 (defn- doc?
   "Whether `d` is a doc: its insets, if any, insets of a doc."
   [d]
-  (and (map? d) (string? (:text d)) (every? inset-spec? (:insets d))))
+  (and (map? d) (string? (:text d)) (levels? (:levels d)) (every? inset-spec? (:insets d))))
 
 (defn- normalized
   "Doc `d` with its newlines, and its insets', normalized."
@@ -336,9 +354,10 @@
     (try (let [s (f doc)]
            (if (string? s) {:text s} {:error (str name " mode wrote no text")}))
          (catch Exception e {:error (str (ex-message e) " (" name " mode)")}))
-    (if (seq (:insets doc))
-      {:error (str "only a mode can write its insets, and " (or name "text") " mode can't")}
-      {:text (:text doc)})))
+    (cond
+      (seq (:insets doc)) {:error (str "only a mode can write its insets, and " (or name "text") " mode can't")}
+      (:levels doc)       {:error (str "only a mode can write its headings, and " (or name "text") " mode can't")}
+      :else               {:text (:text doc)})))
 
 (defn- guarded
   "Mode function `f`, of the mode named `mode` (the buffer's, if not

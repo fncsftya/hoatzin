@@ -281,3 +281,59 @@
   (let [texts (vec (for [i (range 400)] (str/join " " (repeat (+ 20 (mod i 37)) "hoatzin café"))))]
     (is (= (#'layout/wrapped *font* 500 texts)
            (#'layout/paragraphs-of *font* 500 texts)))))
+
+;; ---------------------------------------------------------------- headings
+
+(deftest headings-are-taller
+  (let [ctx (layout/context *font* 4000)
+        lh  (layout/line-height (layout/layout ctx "a"))]
+    (try
+      (let [L (layout/layout ctx "one\ntwo\nthree\nfour" [0 1 0 3])
+            [p0 p1 p2 p3] (layout/paragraphs L)]
+        (is (= [nil 1 nil 3] (mapv :level [p0 p1 p2 p3])))
+        (is (< lh (:lh p1)) "a heading's lines are taller")
+        (is (< (:lh p3) (:lh p1)) "level 1 is bigger than level 3")
+        (is (= 0 (layout/line-y L 0)))
+        (is (= lh (layout/line-y L 1)))
+        (is (= (+ lh (:lh p1)) (layout/line-y L 2)))
+        (is (= (+ lh (:lh p1) lh (:lh p3)) (layout/line-y L 4) (layout/content-height L)))
+        (is (= [0 0 1 2 3 3] (mapv #(layout/line-at-y L %) [0 (dec lh) (+ lh 1) (+ lh (:lh p1)) (+ lh (:lh p1) lh) 100000]))
+            "the line at each height")
+        (is (= (:line-height (layout/line-metrics L 1)) (:lh p1)))
+        (is (= lh (:line-height (layout/line-metrics L 0)))))
+      (finally (layout/release-context ctx)))))
+
+(deftest heading-levels-change-without-the-text
+  (let [ctx (layout/context *font* 4000)]
+    (try
+      (let [t  (text/of "one\ntwo\nthree")
+            L0 (layout/layout ctx t)
+            h0 (layout/content-height L0)
+            L1 (layout/layout ctx t [0 2])
+            h1 (layout/content-height L1)
+            L2 (layout/layout ctx t nil)]
+        (is (< h0 h1))
+        (is (= [nil 2 nil] (mapv :level (layout/paragraphs L1))))
+        (is (= h0 (layout/content-height L2)) "and back to text again")
+        (is (= [nil nil nil] (mapv :level (layout/paragraphs L2)))))
+      (finally (layout/release-context ctx)))))
+
+(deftest headings-wrap-in-their-own-font
+  (let [ctx (layout/context *font* 300)]
+    (try
+      (let [t  (text/of sentence)
+            n0 (layout/line-count (layout/layout ctx t))
+            n1 (layout/line-count (layout/layout ctx t [1]))]
+        (is (< n0 n1) "a heading is wider, so wraps to more lines"))
+      (finally (layout/release-context ctx)))))
+
+(deftest editing-a-heading
+  (let [ctx (layout/context *font* 4000)]
+    (try
+      (layout/layout ctx "one\ntwo" [0 1])
+      (let [L (layout/layout ctx "one\ntwoo" [0 1])]
+        (is (= [nil 1] (mapv :level (layout/paragraphs L))))
+        (is (= ["one" "twoo"] (mapv :text (layout/paragraphs L)))))
+      (let [L (layout/layout ctx "one\ntwoo\nthree" [0 1])]
+        (is (= [nil 1 nil] (mapv :level (layout/paragraphs L)))))
+      (finally (layout/release-context ctx)))))

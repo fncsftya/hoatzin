@@ -395,7 +395,6 @@
   [k0, k1), across each line they are on, in colour `rgb` at `alpha`."
   [app spans k0 k1 [r g b] alpha]
   (let [{:keys [renderer layout scroll scratch]} app
-        lh (layout/line-height layout)
         [ox oy] (geo/origin app)]
     (sdl/set-render-draw-blend-mode renderer sdl/BLENDMODE-BLEND)
     (sdl/set-render-draw-color renderer r g b alpha)
@@ -404,7 +403,8 @@
             :let [x0 (long (Math/floor x0))]]
       (sdl/render-fill-rect renderer
                             (sdl/set-frect! (:frect scratch) (+ ox x0) (+ oy (- (geo/line-top app k) scroll))
-                                            (- (long (Math/ceil x1)) x0) lh)))
+                                            (- (long (Math/ceil x1)) x0)
+                                            (:line-height (layout/line-metrics layout k)))))
     (sdl/set-render-draw-blend-mode renderer sdl/BLENDMODE-NONE)))
 
 (defn- draw-under!
@@ -422,7 +422,6 @@
   (shade! app (dim-spans app) k0 k1 (:background app) dim-alpha)
   (when-not (:composition app)
     (let [{:keys [renderer layout scroll scratch]} app
-          lh    (layout/line-height layout)
           [ox oy] (geo/origin app)
           side  (max 1 (px app 2))
           gap   (max 1 (px app 2))
@@ -433,7 +432,8 @@
               :let [[x k] (layout/caret layout (display/shown-pos app s))]
               :when (and (<= k0 k) (< k k1))]
         (let [x (+ ox (long (Math/floor x)) inset)
-              y (+ oy (- (geo/line-top app k) scroll) (- lh side))]
+              y (+ oy (- (geo/line-top app k) scroll)
+                   (- (:line-height (layout/line-metrics layout k)) side))]
           (dotimes [i (min most-dots (count (get-in app [:variants id :options])))]
             (sdl/render-fill-rect renderer
                                   (sdl/set-frect! (:frect scratch) (+ x (* i (+ side gap))) y side side))))))))

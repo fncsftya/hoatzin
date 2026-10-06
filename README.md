@@ -37,7 +37,7 @@ A file takes the mode for its extension as it is opened or saved; `:mode name` c
               {:id 2 :content ["In a box in a box."]}]}
   ```
 
-  A horizontal rule is `{:type :hr}`. Lists and checklists sit in the text the same way, an item to a line, saved as `{:type :list :content [{:text "an item"}]}` and `{:type :checklist :content [{:text "an item" :checked? true}]}`; a list's `:content` may hold lists too, after the item they are below. A section may have a `:title`.
+  A heading is a line as `{:type :heading :level 2 :text "Where it lives"}`, and a list item may have a `:level` too. A horizontal rule is `{:type :hr}`. Lists and checklists sit in the text the same way, an item to a line, saved as `{:type :list :content [{:text "an item"}]}` and `{:type :checklist :content [{:text "an item" :checked? true}]}`; a list's `:content` may hold lists too, after the item they are below. A section may have a `:title`.
 
   In normal mode:
 
@@ -52,10 +52,11 @@ A file takes the mode for its extension as it is opened or saved; `:mode name` c
   | `h` | adds a horizontal rule below the line, as `cmd+s` adds a section, and moves to the line after it; the caret steps over it, and `cmd+shift+k` there deletes it |
   | `k` | deletes forwards, or the selection; not a section or list after the line |
   | `tab` | in a list: indents the item, then takes it out to the list holding its list, then puts it back |
+  | `1` `2` `3` `4` | makes the lines the selection covers, or the one the caret is in, a heading of that size (2×, 1.6×, 1.3× and 1.15× the editor's font size); the same number again makes them text |
 
   On an empty line, a section or list takes the line's place, the line coming after it. Elsewhere it goes below the line, with a new line after it to write in, unless there is a line after it already.
 
-  In insert mode, `cmd+l` and `cmd+ctrl+l` add a list and a checklist, `tab` is as in normal mode, `return` on an empty last item leaves the list for a new line after it, and `shift+return` leaves every list the caret is in.
+  In insert mode, `cmd+1` to `cmd+4` make headings as `1` to `4` do, `cmd+l` and `cmd+ctrl+l` add a list and a checklist, `tab` is as in normal mode, `return` on an empty last item leaves the list for a new line after it, and `shift+return` leaves every list the caret is in.
 
   `cmd+shift+o` adds a new line above the section or list the caret is in, in the text that holds it (on any other line it is `shift+o`). Up and down move into and out of sections, over folded ones, and, at the top of a text that starts with a section or list, before it; a section shows ten lines and scrolls past that, and clicking its header folds it.
 

@@ -103,11 +103,13 @@
 (defn- sync-layout
   "Lay the text out again, if it has changed since it last was."
   [app]
-  (let [shown (display/display-key app)]
-    (if (and (:layout app) (display/same-display? shown (:laid-out app)))
+  (let [app   (insets/sync-levels app)
+        shown (display/display-key app)]
+    (if (and (:layout app) (identical? (:levels app) (:laid-levels app))
+             (display/same-display? shown (:laid-out app)))
       app
-      (assoc app :layout (layout/layout (:ctx app) (display/display-text app))
-             :laid-out shown :dirty? true))))
+      (assoc app :layout (layout/layout (:ctx app) (display/display-text app) (:levels app))
+             :laid-out shown :laid-levels (:levels app) :dirty? true))))
 
 (defn sync-view
   "Bring font, layout context and layout up to date with the renderer's

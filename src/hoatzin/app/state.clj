@@ -121,6 +121,10 @@
 ;;   :doc :goal-x                          the document (see
 ;;                                         hoatzin.lib.editor); column for
 ;;                                         up/down
+;;   :levels :levels-text                  the heading level of each paragraph
+;;                                         (0: text) as the text was at
+;;                                         :levels-text, or nil for none: see
+;;                                         hoatzin.app.insets
 ;;   :upstream?                            the caret, at a wrap point, is drawn
 ;;                                         at the end of the line above
 ;;   :selecting?                           the mark is active, as Emacs has it:

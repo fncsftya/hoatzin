@@ -21,7 +21,7 @@
   [app]
   (let [app (insets/follow app)
         L  (:layout app)
-        lh (layout/line-height L)
+        lh (if (:inset app) (layout/line-height L) (geo/caret-line-height app))
         top (insets/caret-top app)
         vh (geo/view-height app)
         s  (:scroll app)]

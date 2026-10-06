@@ -8,10 +8,10 @@
   running editor has a session directory there, named for when it began
   and its process, holding its pid and, for each buffer with changes
   to lose, n being the buffer's number:
-    b<n>.base   the buffer as it was, as EDN: {:gen :meta :text :insets :caret}
+    b<n>.base   the buffer as it was, as EDN: {:gen :meta :text :insets :levels :caret}
     b<n>.wal    the log of edits since: a line of EDN each, the first
                 [:gen g], g being the base's generation, the rest
-                [:t lo old-count new caret] and [:i insets]
+                [:t lo old-count new caret] and [:i insets levels]
   A base is written whole to a file of its own and moved into place, so one
   is never half written; then the log begins anew. A log of another
   generation than its base's, which a crash between the two leaves, is
@@ -63,10 +63,10 @@
         line #(spit wal (str (pr-str %) "\n") :append true)]
     (case op
       :base    (do (fs/create-dirs dir)
-                   (write-atomically! base (str (pr-str (select-keys o [:gen :meta :text :insets :caret])) "\n"))
+                   (write-atomically! base (str (pr-str (select-keys o [:gen :meta :text :insets :levels :caret])) "\n"))
                    (spit wal (str (pr-str [:gen gen]) "\n")))
       :edit    (line [:t (:lo o) (:old-count o) (:new o) (:caret o)])
-      :insets  (line [:i (:insets o)])
+      :insets  (line (cond-> [:i (:insets o)] (:levels o) (conj (:levels o))))
       :discard (do (fs/delete-if-exists base) (fs/delete-if-exists wal)))))
 
 (defn apply-ops!
@@ -94,12 +94,12 @@
              t (:text buffer)]
          (when (and (integer? lo) (integer? n) (string? new) (<= 0 lo) (<= (+ lo n) (count t)))
            (assoc buffer :text (text/replace t lo (+ lo n) new) :caret caret)))
-    :i (assoc buffer :insets (first args))
+    :i (assoc buffer :insets (first args) :levels (second args))
     nil))
 
 (defn- read-buffer
   "The buffer in base file `base`, with its log's edits made: {:id :meta
-  :text :insets :caret}."
+  :text :insets :levels :caret}."
   [base]
   (let [wal   (str/replace base #"\.base$" ".wal")
         b     (edn/read-string (slurp base))
@@ -114,7 +114,7 @@
                                   (catch Exception _ nil)))]
                     (if b' (recur b' (rest ls)) b)))
                 b)]
-    (-> (select-keys b [:meta :text :insets :caret])
+    (-> (select-keys b [:meta :text :insets :levels :caret])
         (update :text str)
         (assoc :id (parse-long (re-find #"\d+" (str (fs/file-name base))))))))
 
@@ -131,7 +131,7 @@
 
 (defn sessions
   "The sessions left by editors that are not running now, oldest first, as
-  {:dir d :buffers [{:id :meta :text :insets :caret}] :errors [s]}: those
+  {:dir d :buffers [{:id :meta :text :insets :levels :caret}] :errors [s]}: those
   with nothing in them are removed, and those that can't be read are kept
   under another name, and reported in :errors."
   [root]

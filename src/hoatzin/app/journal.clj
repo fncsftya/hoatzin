@@ -7,8 +7,9 @@
   with what was last kept of it. The first time it differs, the host is
   asked to keep a :base of the whole buffer; then each edit is an :edit,
   where the text changed and how, and each change to the insets (see
-  hoatzin.app.insets) an :insets of all of them, at most every
-  `insets-delay-ms`, since typing in one changes them at every keystroke.
+  hoatzin.app.insets) an :insets of all of them, and of the headings
+  (:levels) of the text, if it has any, at most every `insets-delay-ms`,
+  since typing in one changes them at every keystroke.
   A buffer whose changes are saved, or that is closed, is a :discard: there
   is nothing to lose. When the edits kept pass `compact-chars`, a new :base
   takes their place, which keeps the log from growing without end.
@@ -22,12 +23,12 @@
   touched.
 
   :base  {:op :base :id n :gen g :meta {:path :name :scratch? :dir :mode}
-          :text s :insets [...] :caret n}
+          :text s :insets [...] :levels [...] :caret n}
          :gen is the generation: edits kept belong to the base of the same
          one, and a log of any other is a stale one
   :edit  {:op :edit :id n :gen g :lo n :old-count n :new s :caret n}
          [lo, lo+old-count) of the text became `new`
-  :insets {:op :insets :id n :gen g :insets [...]}
+  :insets {:op :insets :id n :gen g :insets [...] :levels [...]}
   :discard {:op :discard :id n}
 
   The state is the app's :journal: {:buffers {id state} :error e}."
@@ -91,11 +92,13 @@
   [now st b]
   (let [gen (inc (:gen st 0))
         ins (:insets b)
+        lv  (:levels b)
         doc (:doc b)]
-    [{:text (:text doc) :insets ins :meta (meta-of b) :logged? true :gen gen
-      :chars 0 :insets-sent ins :insets-at now}
-     [{:op :base :id (:buffer-id b) :gen gen :meta (meta-of b)
-       :text (str (:text doc)) :insets (insets/snapshot b) :caret (:caret doc)}]]))
+    [{:text (:text doc) :insets ins :levels lv :meta (meta-of b) :logged? true :gen gen
+      :chars 0 :insets-sent ins :levels-sent lv :insets-at now}
+     [(cond-> {:op :base :id (:buffer-id b) :gen gen :meta (meta-of b)
+               :text (str (:text doc)) :insets (insets/snapshot b) :caret (:caret doc)}
+        (insets/levels-of b) (assoc :levels (insets/levels-of b)))]]))
 
 (defn- step
   "[state ops] for buffer `b` as of `now`, given its `state` from before.
@@ -104,7 +107,8 @@
   (let [id   (:buffer-id b)
         doc  (:doc b)
         text (:text doc)
-        ins  (:insets b)]
+        ins  (:insets b)
+        lv   (:levels b)]
     (cond
       ;; nothing to lose
       (not (:modified? b))
@@ -119,16 +123,17 @@
             size (+ 64 (count (:new ch)))]
         (if (> (+ (:chars st) size) compact-chars)
           (rebase now st b)
-          (let [insets? (and (not (identical? ins (:insets-sent st)))
+          (let [insets? (and (not (and (identical? ins (:insets-sent st)) (identical? lv (:levels-sent st))))
                              (or flush? (>= now (+ (:insets-at st) insets-delay-ms))))]
             ;; :insets is what the buffer has; :insets-sent, what was kept
-            [(cond-> (assoc st :text text :insets ins)
+            [(cond-> (assoc st :text text :insets ins :levels lv)
                ch      (update :chars + size)
-               insets? (assoc :insets-sent ins :insets-at now))
+               insets? (assoc :insets-sent ins :levels-sent lv :insets-at now))
              (cond-> []
                ch      (conj {:op :edit :id id :gen (:gen st) :lo (:lo ch) :old-count (:old-count ch)
                               :new (:new ch) :caret (+ (:lo ch) (count (:new ch)))})
-               insets? (conj {:op :insets :id id :gen (:gen st) :insets (insets/snapshot b)}))]))))))
+               insets? (conj (cond-> {:op :insets :id id :gen (:gen st) :insets (insets/snapshot b)}
+                               (insets/levels-of b) (assoc :levels (insets/levels-of b)))))]))))))
 
 (defn observe
   "The app, once what is new in its buffers is handed to :journal-fn: see
@@ -169,7 +174,8 @@
   [app]
   (some->> (get-in app [:journal :buffers])
            vals
-           (keep #(when (and (:logged? %) (not (identical? (:insets %) (:insets-sent %))))
+           (keep #(when (and (:logged? %) (not (and (identical? (:insets %) (:insets-sent %))
+                                                    (identical? (:levels %) (:levels-sent %)))))
                     (+ (:insets-at %) insets-delay-ms)))
            seq
            (reduce min)))

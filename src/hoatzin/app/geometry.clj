@@ -41,29 +41,27 @@
   the blocks above it."
   [app k]
   (reduce (fn [y {:keys [line height]}] (if (< line k) (+ y height) (reduced y)))
-          (* k (layout/line-height (:layout app)))
+          (layout/line-y (:layout app) k)
           (:block-places app)))
 
 (defn line-at-y
   "The visual line at content pixel `y`, clamped to the text. In a block,
   the line above it."
   [app y]
-  (let [L  (:layout app)
-        lh (layout/line-height L)
-        k  (loop [bs (:block-places app), extra 0]
-             (if-let [{:keys [line top height]} (first bs)]
-               (cond (< y top)            (Math/floor (/ (double (- y extra)) lh))
-                     (< y (+ top height)) line
-                     :else                (recur (next bs) (+ extra height)))
-               (Math/floor (/ (double (- y extra)) lh))))]
+  (let [L (:layout app)
+        k (loop [bs (:block-places app), extra 0]
+            (if-let [{:keys [line top height]} (first bs)]
+              (cond (< y top)            (layout/line-at-y L (- y extra))
+                    (< y (+ top height)) line
+                    :else                (recur (next bs) (+ extra height)))
+              (layout/line-at-y L (- y extra))))]
     (-> (long k) (max 0) (min (dec (layout/line-count L))))))
 
 (defn content-height
   "How tall the text is, with its blocks, in pixels."
   [app]
-  (let [L (:layout app)]
-    (reduce + (* (layout/line-count L) (layout/line-height L))
-            (map :height (:block-places app)))))
+  (reduce + (layout/content-height (:layout app))
+          (map :height (:block-places app))))
 
 (defn visible-lines
   "The visual lines [k0, k1) at least partly in view."
@@ -84,6 +82,11 @@
   composition moves the caret off any wrap point, so ignore it then."
   [{:keys [layout composition upstream?] :as app}]
   (layout/caret layout (display/view-caret app) (and upstream? (nil? composition))))
+
+(defn caret-line-height
+  "How tall the line the caret is on is: a heading's is more than the text's."
+  [app]
+  (:line-height (layout/line-metrics (:layout app) (second (caret-place app)))))
 
 (defn caret-or
   "[x visual-line] of `pos`, as drawn if it is the caret."
