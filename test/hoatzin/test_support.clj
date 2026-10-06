@@ -169,16 +169,21 @@
   into :saved-settings, unless there is a :settings-error to fail with.
   The minor modes' data it is asked for is noted in :data-asked, as
   [mode file], to be answered with `data-read!`, and what it is given to
-  keep is kept in :mode-data, by [mode file].
-  `dir` is its working directory, nil unless given, and `mode-sources`
+  keep is kept in :mode-data, by [mode file]. The ops of the log of edits
+  it is given (see hoatzin.app.journal) are kept in :journal, unless there
+  is a :journal-error to fail with; `recovered` are the buffers it starts
+  with, after a crash.
+  `files` are the files it starts with, `dir` its working directory, nil
+  unless given, and `mode-sources`
   modes besides the editor's own (see hoatzin.app/create).
   Close with `close!`."
-  [& {:keys [width height density clipboard mode dir mode-sources]
+  [& {:keys [width height density clipboard mode dir mode-sources recovered files]
       :or   {width 400 height 300 density 2.0 clipboard "" mode :insert}}]
   (let [c (canvas (long (* width density)) (long (* height density)))
         s (atom {:canvas c :now 0 :clipboard clipboard :density density :dialogs 0
-                 :open-dialogs [] :save-dialogs [] :dir-dialogs [] :files {}
-                 :data-asked [] :mode-data {}})]
+                 :open-dialogs [] :save-dialogs [] :dir-dialogs [] :files (or files {})
+                 :data-asked [] :mode-data {}
+                 :journal [] :journal-error nil})]
     (swap! s assoc :app (app/create (cond-> {:renderer     (:renderer c)
                                              :density-fn   (constantly (double density))
                                              :clipboard-fn #(:clipboard @s)
@@ -209,7 +214,12 @@
                                                                    (update st :mode-data dissoc [mode file])
                                                                    (assoc-in st [:mode-data [mode file]] data))))
                                                nil)
+                                             :journal-fn
+                                             (fn [ops]
+                                               (or (:journal-error @s)
+                                                   (do (swap! s update :journal into ops) nil)))
                                              :now          0}
+                                      recovered (assoc :recovered recovered)
                                       mode (assoc :mode mode)
                                       mode-sources (assoc :mode-sources mode-sources))))
     s))

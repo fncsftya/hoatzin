@@ -172,6 +172,48 @@
                 (assoc :message (str "\"" file "\" " (files/file-lines t) " lines"))
                 modes/opened)))))))
 
+(defn- recovered-doc
+  "The current buffer's :doc, and its insets, as recovered buffer `r` had
+  them."
+  [app {:keys [text insets caret]}]
+  (let [t (text/of text)]
+    (-> app
+        (assoc :doc {:text t :caret (min (or caret 0) (count t))})
+        (insets/load-all insets))))
+
+(def recovered-scratch-name "scratch (recovered)")
+
+(defn restore
+  "The app with the buffers `recovered` (see hoatzin.app.recovery/sessions)
+  as they were, after a crash, each in a buffer of its own, with the text
+  and insets it had, and its file, if it visited one, read again as what is
+  saved. A scratch buffer's is no longer one, for a quit not to lose what
+  it held: it is `recovered-scratch-name`, until it is saved or closed. The
+  first is shown. Undo history is lost."
+  [app now recovered]
+  (let [[app shown]
+        (reduce
+         (fn [[app shown] {:keys [meta] :as r}]
+           (let [{:keys [path name scratch? dir mode]} meta
+                 mode  (or mode (when path (modes/for-path app path)))
+                 file  (when path
+                         (let [f ((:read-file-fn app) path)]
+                           (when-not (:error f)
+                             (let [read (modes/read-text app mode (text/normalize-newlines (:text f)))]
+                               (when-not (:error read) read)))))
+                 saved (text/of (or (:text file) ""))
+                 app   (-> (add app now {:path path :dir dir :major-mode mode :saved saved
+                                         :buffer-name (if scratch? recovered-scratch-name name)
+                                         :doc (assoc ed/empty-doc :text saved)})
+                           (insets/load-all (:insets file))
+                           files/mark-saved
+                           (recovered-doc r)
+                           (cond-> path modes/opened))]
+             [app (or shown (:buffer-id app))]))
+         [app nil]
+         recovered)]
+    (cond-> app shown (switch now shown))))
+
 (defn close
   "Close the current buffer, unless it has unsaved changes and not
   `force?`, and switch to the one before it (or, for the first, after it).

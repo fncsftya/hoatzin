@@ -5,6 +5,8 @@
             [clojure.string :as str]
             [jolt.ffi :as ffi]
             [hoatzin.app :as app]
+            [hoatzin.app.journal :as journal]
+            [hoatzin.app.recovery :as recovery]
             [hoatzin.lib.coretext :as ct]
             [hoatzin.lib.macos :as macos]
             [hoatzin.lib.sdl :as sdl]
@@ -252,6 +254,18 @@
             (sdl/set-cursor (cursors pointer)))
           (recur pointer))))))
 
+(defn- recover
+  "What a crashed session left: {:sessions [...] :message s}, :message why
+  it could not be read, if it could not."
+  [root]
+  (try (let [sessions (recovery/sessions root)
+             errors   (mapcat :errors sessions)]
+         {:sessions sessions
+          :message  (when (seq errors)
+                      (str "Can't recover " (str/join ", " errors) " (kept in " root ")"))})
+       (catch Exception e
+         {:sessions [] :message (str "Can't look for a crashed session: " (ex-message e))})))
+
 (defn -main [& _args]
   ;; We draw the composition (marked text) ourselves: SDL then sends it as
   ;; TEXT_EDITING events. The OS still draws the candidate list.
@@ -276,7 +290,10 @@
           data    (mode-data)
           settings-file (settings/file)
           {:keys [error] :as loaded} (settings/read-file settings-file)
-          modes (user-modes (settings/modes-dir))]
+          modes (user-modes (settings/modes-dir))
+          ;; what a crash left, and the log of this session's edits
+          found   (recover (recovery/root))
+          session (recovery/start! (recovery/root))]
       (sdl/check! (sdl/start-text-input window) "SDL_StartTextInput")
       (try
         (reset! latest (app/create {:renderer     renderer
@@ -295,11 +312,17 @@
                                     :load-mode-data-fn (:load! data)
                                     :save-mode-data-fn (:save! data)
                                     :mode-sources (:sources modes)
+                                    :journal-fn   #(recovery/apply-ops! session %)
+                                    :recovered    (mapcat :buffers (:sessions found))
                                     :message      (some->> (cond->> (:errors modes)
-                                                             error (cons (str "Can't read settings: " error)))
+                                                             error (cons (str "Can't read settings: " error))
+                                                             (:message found) (cons (:message found)))
                                                            seq
                                                            (str/join "; "))
                                     :now          (sdl/get-ticks)}))
+        ;; a crashed session goes once this one has what it held
+        (when-not (get-in @latest [:journal :error])
+          (run! recovery/discard! (:sessions found)))
         (with-open [a (ffi/confined-arena)]
           (let [irect (ffi/alloc a sdl/rect)
                 watch (live-resize-watch window latest irect)]
@@ -307,6 +330,9 @@
             (try (run-loop window latest dialogs data (ffi/alloc a sdl/EVENT-SIZE) irect cursors)
                  (finally (sdl/remove-event-watch watch ffi/null)))))
         (finally
+          ;; unsaved changes, if any, stay for the next start to recover:
+          ;; the window may be closed, or `:quit!` used, with them
+          (recovery/finish! session (boolean (some-> @latest journal/unsaved?)))
           (some-> @latest app/destroy!)
           (run! sdl/destroy-cursor (vals cursors))
           (sdl/destroy-renderer renderer)

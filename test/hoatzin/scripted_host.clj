@@ -20,8 +20,15 @@
 (def ^:private colon-q
   [{:type :text :text ":"} {:type :text :text "q"} {:type :key :key sdl/K-RETURN :mod 0}])
 
+(def ^:private typed
+  "Insert mode, and some text typed: then nothing more, the host waits on."
+  (into [{:type :text :text "i"}]
+        (map (fn [c] {:type :text :text (str c)}) "unsaved work")))
+
 (def scripts
   {"close"     [{:type :quit}]
+   "typed"     typed
+   "typed-close" (conj typed {:type :quit})
    "colon-q"   colon-q
    "big-close" [{:type :opened :path "/tmp/big.txt" :text big-text} {:type :quit}]
    "big-colon-q" (into [{:type :opened :path "/tmp/big.txt" :text big-text}] colon-q)})

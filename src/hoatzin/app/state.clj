@@ -170,6 +170,9 @@
 ;;   :scroll-target :scroll-pos :scroll-at the scroll the wheel is gliding to, the
 ;;                                         exact scroll on the way and when it
 ;;                                         last moved
+;;   :journal                            what has been kept of each buffer
+;;                                         for recovery after a crash: see
+;;                                         hoatzin.app.journal
 ;;   :focused? :blink-from                 the caret blinks from :blink-from
 ;;   :dirty? :drawn-phase                  redraw needed / caret phase drawn
 ;;   :follow?                              scroll the caret into view

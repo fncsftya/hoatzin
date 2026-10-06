@@ -20,6 +20,8 @@
   EDN, without waiting for it: it comes back as :mode-data, and it must be
   read where nothing waits on it) and :save-mode-data-fn (keep data d as
   minor mode m's file f, as EDN, or with d nil keep no such file,
+  returning nil, or why it could not) and :journal-fn (keep the ops, a
+  vector, of the write-ahead log of edits, as hoatzin.app.journal has them,
   returning nil, or why it could not). :rand-fn, a random number from 0
   to 1, is `rand` unless given.
   That is what lets tests drive the editor headlessly and deterministically.
@@ -54,6 +56,13 @@
                                     unsaved changes; `:quit!` quits regardless
     :settings                       show the settings window, over the text
                                     until escape closes it
+
+  Crash safety: after every event, what changed in the buffers with
+  unsaved changes goes to :journal-fn, as a log of the edits (see
+  hoatzin.app.journal), which the host keeps apart from the files the
+  buffers visit: those are only written by :write. Given :recovered, the
+  buffers a crashed session left (see hoatzin.app.recovery/sessions), the
+  app starts with them, as they were, and says so.
 
   The scratch buffer's changes are its own: they don't stop a quit, or
   its closing, unless it has been saved to a file.
@@ -145,6 +154,7 @@
             [hoatzin.app.input.keyboard :as keyboard]
             [hoatzin.app.input.mouse :as mouse]
             [hoatzin.app.insets :as insets]
+            [hoatzin.app.journal :as journal]
             [hoatzin.app.xsel :as xsel]
             [hoatzin.app.modes :as modes]
             [hoatzin.app.rename :as rename]
@@ -160,52 +170,68 @@
 
 ;; ---------------------------------------------------------------- lifecycle
 
+(defn- recovered-message [recovered]
+  (str "Recovered " (count recovered) " unsaved buffer" (when (> (count recovered) 1) "s") ": "
+       (str/join ", " (map #(or (some-> (get-in % [:meta :path]) files/file-name)
+                                (get-in % [:meta :name]))
+                           recovered))
+       " (their files are as last saved)"))
+
 (defn create
   "A new, empty editor drawing with `:renderer`. Options (all but :renderer
   optional): :density-fn, :clipboard-fn, :set-clipboard-fn, :open-dialog-fn,
   :save-dialog-fn, :dir-dialog-fn, :read-file-fn, :write-file-fn,
   :save-settings-fn, :font-families-fn, :load-mode-data-fn,
-  :save-mode-data-fn, :now, :dir (the working
+  :save-mode-data-fn, :journal-fn, :recovered (buffers to start with,
+  after a crash), :now, :dir (the working
   directory, if any), :settings (the defaults unless given), :mode
   (:normal unless given), :mode-sources (modes besides the editor's own,
   as [origin source] pairs: see hoatzin.app.modes/load-sources), :message,
   and any key of hoatzin.app.state/defaults. It has one buffer, the
   scratch buffer. A mode that can't be loaded is left out, and the
   message says why. Release it with `destroy!`."
-  [{:keys [now dir mode-sources message] :or {now 0} :as opts}]
-  (let [{:keys [modes errors]} (modes/load-sources (concat (modes/builtin-sources) mode-sources))]
-    (sync/settle (buffers/init
-                 (merge state/defaults
-                        {:density-fn   (constantly 1.0)
-                         :clipboard-fn (constantly "")
-                         :set-clipboard-fn (fn [_])
-                         :open-dialog-fn (fn [_])
-                         :save-dialog-fn (fn [_])
-                         :dir-dialog-fn (fn [_])
-                         :read-file-fn (fn [_] {:error "no file system"})
-                         :write-file-fn (fn [_ _] "no file system")
-                         :save-settings-fn (fn [_])
-                         :font-families-fn (constantly [])
-                         :rand-fn      rand
-                         :load-mode-data-fn (fn [_ _])
-                         :save-mode-data-fn (fn [_ _ _])
-                         :option-faces (atom {})
-                         :settings     settings/defaults
-                         :textures     (textures/cache)
-                         :ui-textures  (textures/cache)
-                         :floats       []
-                         :ui-values    {}
-                         :scratch      {:frect (ffi/alloc sdl/frect) :irect (ffi/alloc sdl/rect)}
-                         :mode         :normal
-                         :focused?     true
-                         :blink-from   now
-                         :active-at    now
-                         :dirty?       true}
-                        (dissoc opts :now :dir :mode-sources)
-                        {:modes   (merge {(:name variants/mode) variants/mode (:name search/mode) search/mode} modes)
-                         :message (some->> (seq (remove nil? (cons message errors)))
-                                           (str/join "; "))})
-                 dir))))
+  [{:keys [now dir mode-sources message recovered] :or {now 0} :as opts}]
+  (let [{:keys [modes errors]} (modes/load-sources (concat (modes/builtin-sources) mode-sources))
+        app (sync/settle
+             (buffers/init
+              (merge state/defaults
+                     {:density-fn   (constantly 1.0)
+                      :clipboard-fn (constantly "")
+                      :set-clipboard-fn (fn [_])
+                      :open-dialog-fn (fn [_])
+                      :save-dialog-fn (fn [_])
+                      :dir-dialog-fn (fn [_])
+                      :read-file-fn (fn [_] {:error "no file system"})
+                      :write-file-fn (fn [_ _] "no file system")
+                      :save-settings-fn (fn [_])
+                      :font-families-fn (constantly [])
+                      :rand-fn      rand
+                      :load-mode-data-fn (fn [_ _])
+                      :save-mode-data-fn (fn [_ _ _])
+                      :journal-fn   (fn [_])
+                      :option-faces (atom {})
+                      :settings     settings/defaults
+                      :textures     (textures/cache)
+                      :ui-textures  (textures/cache)
+                      :floats       []
+                      :ui-values    {}
+                      :scratch      {:frect (ffi/alloc sdl/frect) :irect (ffi/alloc sdl/rect)}
+                      :mode         :normal
+                      :focused?     true
+                      :blink-from   now
+                      :active-at    now
+                      :dirty?       true}
+                     (dissoc opts :now :dir :mode-sources :recovered)
+                     {:modes   (merge {(:name variants/mode) variants/mode (:name search/mode) search/mode} modes)
+                      :message (some->> (seq (remove nil? (cons message errors)))
+                                        (str/join "; "))})
+              dir))
+        restored (if (seq recovered)
+                   (-> (buffers/restore app now recovered)
+                       (update :message #(str/join "; " (remove nil? [(recovered-message recovered) %]))))
+                   app)]
+    ;; what was recovered is kept again, as the first thing
+    (journal/observe restored now)))
 
 (defn destroy! [app]
   (sync/release-view! app)
@@ -302,13 +328,8 @@
       :expose (assoc app :dirty? true)
       app)))
 
-(defn handle
-  "The app after `event` (see the ns doc) at time `now` (ms). A minor
-  mode's data goes to that mode, whatever else is happening. A question
-  in the status bar, if any, takes the event first (see
-  hoatzin.app.confirm), then the section being renamed, then a minor
-  mode of the buffer's, then an open dropdown list, then the field or
-  dropdown with the focus, then the open window, then the text."
+(defn- handle-event
+  "The app after `event` at time `now`, but for the log of edits."
   [app event now]
   (let [;; once the editor font's wait is over, sync-view makes it
         app (if (some-> (:fonts-at app) (<= now)) (dissoc app :fonts-at) app)
@@ -337,6 +358,17 @@
       (when (:window app) (fields/on-window-event app now event))
       (on-text-event app now event))))
 
+(defn handle
+  "The app after `event` (see the ns doc) at time `now` (ms), and the log
+  of what it changed (see hoatzin.app.journal). A minor
+  mode's data goes to that mode, whatever else is happening. A question
+  in the status bar, if any, takes the event first (see
+  hoatzin.app.confirm), then the section being renamed, then a minor
+  mode of the buffer's, then an open dropdown list, then the field or
+  dropdown with the focus, then the open window, then the text."
+  [app event now]
+  (journal/observe (handle-event app event now) now))
+
 ;; ---------------------------------------------------------------- the host's loop
 
 (defn settle
@@ -350,7 +382,8 @@
   "How long the host may sleep before sending a :tick: until the caret next
   toggles, a held drag next scrolls, the editor font is to be applied, a
   long text is to wrap to a new width, or a gliding dropdown list next
-  moves, or indefinitely (-1) when nothing changes without an event."
+  moves, or the insets' changes are to be kept for recovery, or
+  indefinitely (-1) when nothing changes without an event."
   [app now]
   (let [b (:blink-ms app)
         waits (cond-> []
@@ -361,7 +394,8 @@
                 (:fonts-at app)             (conj (max 0 (- (:fonts-at app) now)))
                 (:wrap-at app)              (conj (max 0 (- (:wrap-at app) now)))
                 (dropdown/gliding? app)     (conj (:frame-ms app))
-                (scroll/gliding? app)       (conj (:frame-ms app)))]
+                (scroll/gliding? app)       (conj (:frame-ms app))
+                (journal/due-at app)        (conj (max 0 (- (journal/due-at app) now))))]
     (if (seq waits) (reduce min waits) -1)))
 
 (defn pointer
