@@ -287,9 +287,9 @@
                     :rule [(str q "---")]
                     (:list :checklist) (map #(str q %) (md-list block 0))
                     (let [n (str nest "> ")]
-                               (md-lines (cond-> block
-                                           (:title block) (update :text #(str "**" (:title block) "**\n\n" %)))
-                                         n (str nest ">") (str nest "    "))))))]
+                      (md-lines (cond-> block
+                                  (:title block) (update :text #(str "**" (:title block) "**\n\n" %)))
+                                n (str nest ">") (str nest "    "))))))]
     (->> (blocks doc)
          (map (comp vec piece))
          (interpose [blank])
@@ -314,19 +314,19 @@
                        [] xs)]
     (concat ["<ul>"]
             (map #(str "  " %)
-            (mapcat (fn [{:keys [item lists]}]
-                      (let [open (str "<li>"
-                                      (when item
-                                        (str (when checklist?
-                                               (str "<input type=\"checkbox\""
-                                                    (when (nth item 2) " checked")
-                                                    " onclick=\"return false;\"> "))
-                                             (escape-html (second item)))))
-                            inner (mapcat (fn [l] (map #(str "  " %) (html-list l))) lists)]
-                        (if (seq inner)
-                          (concat [open] inner ["</li>"])
-                          [(str open "</li>")])))
-                    groups))
+                 (mapcat (fn [{:keys [item lists]}]
+                           (let [open (str "<li>"
+                                           (when item
+                                             (str (when checklist?
+                                                    (str "<input type=\"checkbox\""
+                                                         (when (nth item 2) " checked")
+                                                         " onclick=\"return false;\"> "))
+                                                  (escape-html (second item)))))
+                                 inner (mapcat (fn [l] (map #(str "  " %) (html-list l))) lists)]
+                             (if (seq inner)
+                               (concat [open] inner ["</li>"])
+                               [(str open "</li>")])))
+                         groups))
             ["</ul>"])))
 
 (defn- html-lines
@@ -340,11 +340,11 @@
                 :rule ["<hr>"]
                 (:list :checklist) (html-list block)
                 (concat ["<section>"]
-                                 (when (:title block)
-                                   [(str "  <h" (min 6 (inc depth)) ">" (escape-html (:title block))
-                                         "</h" (min 6 (inc depth)) ">")])
-                                 (map #(str "  " %) (html-lines block (inc depth)))
-                                 ["</section>"]))))
+                        (when (:title block)
+                          [(str "  <h" (min 6 (inc depth)) ">" (escape-html (:title block))
+                                "</h" (min 6 (inc depth)) ">")])
+                        (map #(str "  " %) (html-lines block (inc depth)))
+                        ["</section>"]))))
           (blocks doc)))
 
 (defn- export-html [app]

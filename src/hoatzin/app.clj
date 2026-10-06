@@ -348,15 +348,15 @@
         app (dropdown/glide app now)
         app (scroll/glide app now)]
     (or
-      (when (= :mode-data (:type event)) (modes/loaded app event))
-      (when (:confirm app) (confirm/on-event app now event))
-      (when (:choose app) (choose/on-event app now event))
-      (when (:renaming app) (rename/on-event app event))
-      (modes/on-event app now event)
-      (when (:list app) (dropdown/on-event app now event))
-      (when (:focus app) (fields/on-focus-event app now event))
-      (when (:window app) (fields/on-window-event app now event))
-      (on-text-event app now event))))
+     (when (= :mode-data (:type event)) (modes/loaded app event))
+     (when (:confirm app) (confirm/on-event app now event))
+     (when (:choose app) (choose/on-event app now event))
+     (when (:renaming app) (rename/on-event app event))
+     (modes/on-event app now event)
+     (when (:list app) (dropdown/on-event app now event))
+     (when (:focus app) (fields/on-focus-event app now event))
+     (when (:window app) (fields/on-window-event app now event))
+     (on-text-event app now event))))
 
 (defn handle
   "The app after `event` (see the ns doc) at time `now` (ms), and the log

@@ -188,15 +188,15 @@
 
       :else
       (condp = key
-      sdl/K-UP       (move-to app (dec i))
-      sdl/K-DOWN     (move-to app (inc i))
-      sdl/K-PAGEUP   (move-to app (- i rows))
-      sdl/K-PAGEDOWN (move-to app (+ i rows))
-      sdl/K-HOME     (move-to app 0)
-      sdl/K-END      (move-to app (count (:buffers app)))
-      sdl/K-RETURN   (choose app now i)
-      sdl/K-KP-ENTER (choose app now i)
-      app))))
+        sdl/K-UP       (move-to app (dec i))
+        sdl/K-DOWN     (move-to app (inc i))
+        sdl/K-PAGEUP   (move-to app (- i rows))
+        sdl/K-PAGEDOWN (move-to app (+ i rows))
+        sdl/K-HOME     (move-to app 0)
+        sdl/K-END      (move-to app (count (:buffers app)))
+        sdl/K-RETURN   (choose app now i)
+        sdl/K-KP-ENTER (choose app now i)
+        app))))
 
 (defn on-wheel [app dy]
   (scroll-to app (- (:buffers-scroll app 0) (long (Math/signum (double dy))))

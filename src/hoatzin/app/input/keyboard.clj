@@ -166,7 +166,7 @@
         to-line-end #(let [k (line-of %)]
                        (move-on-line app now shift? k (layout/line-end L k)))
         to-first-non-blank #(let [[start end] (logical-line text %)
-                              t (text/of text)]
+                                  t (text/of text)]
                               (go (loop [j start]
                                     (if (and (< j end) (Character/isWhitespace (text/char-at t j))) (recur (inc j)) j))))
         page (max 1 (quot (view-height app) (layout/line-height L)))]

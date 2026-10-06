@@ -37,8 +37,6 @@ We are using the Jolt programming language. For more reference, see:
 - Keep code consistent with `cljfmt`; run it on the files you changed, not the whole tree (e.g. `cljfmt check src/hoatzin/app.clj`).
   - `cljfmt check PATHS...` reports formatting diffs without touching files; run it before finishing a task.
   - `cljfmt fix PATHS...` rewrites in place; use it on files you edited, then review the diff.
-- Don't `cljfmt fix` files you haven't touched: it creates noisy, unrelated diffs.
-- If the tree isn't already clean, fix only your own changes and don't reformat existing code.
 
 ## Gotchas
 

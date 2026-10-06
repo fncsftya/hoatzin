@@ -255,7 +255,6 @@
             (recur (inc k) t2))))
       (finally (layout/release-context ctx)))))
 
-
 (deftest incremental-matches-fresh
   ;; edits across paragraphs: newlines typed and deleted, ranges removed
   (let [ctx (layout/context *font* 300)

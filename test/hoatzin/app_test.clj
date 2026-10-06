@@ -1901,7 +1901,7 @@
   (testing "lists, in insert mode: only a line is added, and it can be undone"
     (with-session [s :mode :normal]
       (auk! s {:content ["one" {:type :list :content [{:text "a"} {:type :list :content [{:text ""}
-                                {:type :list :content [{:text "deep"}]}]}]} "two"]})
+                                                                                         {:type :list :content [{:text "deep"}]}]}]} "two"]})
       (press-i! s)
       (t/press! s sdl/K-DOWN)
       (t/press! s sdl/K-DOWN)
@@ -2262,7 +2262,7 @@
     (t/type! s "l")
     (is (= [0 0] (insets/path (t/app s))) "a list in a section")
     (t/press! s sdl/K-S cmd)
-    (is (= [[0 "a\n" [[0 "" ] [0 ""]]]] (sections s)) "cmd+s in it adds a section after it, in the section")
+    (is (= [[0 "a\n" [[0 ""] [0 ""]]]] (sections s)) "cmd+s in it adds a section after it, in the section")
     (is (= [:list :section] (map #(:kind % :section) (:insets (first (insets/snapshot (t/app s))))))
         "in that order")
     (t/press! s sdl/K-UP)
@@ -2466,7 +2466,7 @@
     (is (= [[-1 "a"]] (sections s)) "and the section stays")
     (testing "and in a list, its item"
       (open! s "/notes/l.auk" (pr-str {:content ["one" {:type :checklist :content [{:text "x" :checked? true}
-                                                                                 {:text "y"}]}]}))
+                                                                                   {:text "y"}]}]}))
       (t/press! s sdl/K-DOWN)
       (t/press! s sdl/K-K cmd)
       (is (= [{:after 0 :text "y" :insets [] :kind :checklist :checked [false]}] (insets/snapshot (t/app s)))))))

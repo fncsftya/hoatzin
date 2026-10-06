@@ -230,7 +230,7 @@
         (if (seq left)
           (show app now (left (max 0 (dec i))))
           (let [b (fresh app (:next-buffer-id app) {:buffer-name scratch-name :scratch? true
-                                                :dir (:dir app)})]
+                                                    :dir (:dir app)})]
             (-> app (assoc :buffers [b]) (update :next-buffer-id inc) (show now b))))))))
 
 (defn close-buffer

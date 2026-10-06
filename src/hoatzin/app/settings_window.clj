@@ -100,7 +100,7 @@
                   (font editor "editor" :editor-font)
                   (font ui "ui" :ui-font)
                   (row theme-label {:kind :dropdown :id :settings/theme
-                              :value (:theme (:settings app)) :options theme/names
-                              :swatches (theme/swatches) :style {:width 0 :grow 1}})
+                                    :value (:theme (:settings app)) :options theme/names
+                                    :swatches (theme/swatches) :style {:width 0 :grow 1}})
                   (row line-height (shown :settings/line-height layout/line-spacing
                                           size-width))])}))

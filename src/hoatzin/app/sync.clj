@@ -107,7 +107,7 @@
     (if (and (:layout app) (display/same-display? shown (:laid-out app)))
       app
       (assoc app :layout (layout/layout (:ctx app) (display/display-text app))
-                 :laid-out shown :dirty? true))))
+             :laid-out shown :dirty? true))))
 
 (defn sync-view
   "Bring font, layout context and layout up to date with the renderer's

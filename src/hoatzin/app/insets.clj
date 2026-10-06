@@ -430,12 +430,12 @@
         (assoc-in [:insets id] (fresh id order above? spec))
         (assoc :next-inset-id (inc id))
         (as-> level
-          (if (rule? spec)
-            (-> (leave level now)
-                (update :doc ed/move (if in-place? start (inc end)))
-                (assoc :goal-x nil :upstream? false)
-                (touched now))
-            (enter level now id))))))
+              (if (rule? spec)
+                (-> (leave level now)
+                    (update :doc ed/move (if in-place? start (inc end)))
+                    (assoc :goal-x nil :upstream? false)
+                    (touched now))
+                (enter level now id))))))
 
 (defn add
   "A new inset of `spec`, {:text s :kind k ...} (see `fresh`), or of
