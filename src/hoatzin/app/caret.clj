@@ -129,8 +129,16 @@
              :else (let [t (text-with-caret app)]
                      (and (nil? (ed/selection (:doc t))) (caret-in-view? t))))))
 
+(defn idle?
+  "Whether no event but a tick has come for :blink-idle-ms by `now` (ms):
+  the caret then stops blinking, and shows, until the next event."
+  [app now]
+  (>= (- now (:active-at app 0)) (:blink-idle-ms app)))
+
 (defn caret-visible?
   "Whether the caret is shown at time `now` (ms): it is blinking, and in
-  the on half of the blink."
+  the on half of the blink, or the user has been idle too long to blink."
   [app now]
-  (and (caret-blinking? app) (even? (quot (- now (:blink-from app)) (:blink-ms app)))))
+  (and (caret-blinking? app)
+       (or (idle? app now)
+           (even? (quot (- now (:blink-from app)) (:blink-ms app))))))

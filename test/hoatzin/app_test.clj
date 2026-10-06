@@ -697,6 +697,19 @@
       (t/send! s {:type :tick})
       (is (= (dissoc a :layout) (dissoc (t/app s) :layout))))))
 
+(deftest caret-stops-blinking-when-idle
+  (with-session [s]
+    (let [visible? #(app/caret-visible? (t/app s) (:now @s))]
+      (t/advance! s 29900)
+      (is (= 100 (app/ms-until-wake (t/app s) (:now @s))) "wakes for the idle deadline")
+      (t/advance! s 200)
+      (is (visible?) "steady once idle")
+      (is (= -1 (app/ms-until-wake (t/app s) (:now @s))) "and nothing to wake for")
+      (t/advance! s 530)
+      (is (visible?))
+      (t/type! s "x")
+      (is (= 530 (app/ms-until-wake (t/app s) (:now @s))) "blinks again after input"))))
+
 (deftest an-off-screen-caret-does-not-blink
   (with-session [s]
     (long-session! s)

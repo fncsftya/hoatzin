@@ -8,6 +8,7 @@
   {:status-padding 4           ; points above and below the status bar's text
    :margin      24             ; points
    :blink-ms    530            ; the macOS caret blink period
+   :blink-idle-ms 30000        ; the caret stops blinking after this long without input
    :wheel-lines 3
    :scrollbar-width 14         ; points: the bar's column at the right edge
    :thumb-width 6              ; points; wider while the bar is in use

@@ -199,6 +199,7 @@
                          :mode         :normal
                          :focused?     true
                          :blink-from   now
+                         :active-at    now
                          :dirty?       true}
                         (dissoc opts :now :dir :mode-sources)
                         {:modes   (merge {(:name variants/mode) variants/mode (:name search/mode) search/mode} modes)
@@ -322,6 +323,7 @@
         ;; and a list closes as the window loses the focus
         app (if (and (= :focus (:type event)) (not (:focused? event))) (dropdown/close app) app)
         app (rename/keep-for app event)
+        app (if (#{:tick :expose} (:type event)) app (assoc app :active-at now))
         app (dropdown/glide app now)
         app (scroll/glide app now)]
     (or
@@ -352,7 +354,9 @@
   [app now]
   (let [b (:blink-ms app)
         waits (cond-> []
-                (caret/caret-blinking? app) (conj (- b (mod (- now (:blink-from app)) b)))
+                (and (caret/caret-blinking? app) (not (caret/idle? app now)))
+                (conj (min (- b (mod (- now (:blink-from app)) b))
+                           (- (+ (:active-at app) (:blink-idle-ms app)) now)))
                 (mouse/autoscrolling? app)  (conj (:autoscroll-ms app))
                 (:fonts-at app)             (conj (max 0 (- (:fonts-at app) now)))
                 (:wrap-at app)              (conj (max 0 (- (:wrap-at app) now)))
